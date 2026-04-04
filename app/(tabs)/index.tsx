@@ -16,7 +16,7 @@ export default function HomeScreen() {
   const fetchSignal = async () => {
     try {
       setError('');
-      const response = await fetch('http://localhost:3000/signal');
+      const response = await fetch('https://sensor-backend-1rk2.onrender.com/signal');
       const data = await response.json();
       setSignal(data);
     } catch (err) {
