@@ -13,14 +13,74 @@ import { LineChart } from 'react-native-chart-kit';
 const API_BASE = 'https://sensor-backend-1rk2.onrender.com';
 const DEVICE_ID = 'esp32-001';
 const CHART_WIDTH = Dimensions.get('window').width - 64;
-const SIGNAL_LIMIT = 60;      // last 60 one-second points
+const SIGNAL_LIMIT = 600;     // last 600 one-second points
 const REFRESH_MS = 2000;      // poll every 2 seconds
+const ON_THRESHOLD_AMPS = 0.5;
 
 type SignalPoint = {
   deviceId: string;
   triggered: boolean;
   value: number;
   timestamp: string;
+};
+
+type AnnotatedSignalPoint = SignalPoint & {
+  isOn: boolean;
+  onTimeSeconds: number;
+  completedRunDurationSeconds: number | null;
+};
+
+const formatDuration = (totalSeconds: number) => {
+  const safeSeconds = Math.max(0, totalSeconds);
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
+const annotateSignals = (
+  points: SignalPoint[],
+  thresholdAmps: number
+): AnnotatedSignalPoint[] => {
+  let runStartMs: number | null = null;
+  let lastOnDurationSeconds = 0;
+
+  return points.map((point) => {
+    const pointMs = new Date(point.timestamp).getTime();
+    const isOn = point.value >= thresholdAmps;
+
+    if (isOn) {
+      if (runStartMs === null) {
+        runStartMs = pointMs;
+      }
+
+      const onTimeSeconds = Math.max(
+        0,
+        Math.round((pointMs - runStartMs) / 1000)
+      );
+
+      lastOnDurationSeconds = onTimeSeconds;
+
+      return {
+        ...point,
+        isOn: true,
+        onTimeSeconds,
+        completedRunDurationSeconds: null,
+      };
+    }
+
+    const completedRunDurationSeconds =
+      runStartMs !== null ? lastOnDurationSeconds : null;
+
+    runStartMs = null;
+    lastOnDurationSeconds = 0;
+
+    return {
+      ...point,
+      isOn: false,
+      onTimeSeconds: 0,
+      completedRunDurationSeconds,
+    };
+  });
 };
 
 export default function HomeScreen() {
@@ -72,7 +132,22 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, []);
 
-  const latestPoint = signals.length > 0 ? signals[signals.length - 1] : null;
+  const annotatedSignals = annotateSignals(signals, ON_THRESHOLD_AMPS);
+
+  const latestPoint =
+    annotatedSignals.length > 0
+      ? annotatedSignals[annotatedSignals.length - 1]
+      : null;
+
+  const isCurrentlyOn = latestPoint?.isOn ?? false;
+
+  const latestRunTimeText = latestPoint
+    ? latestPoint.isOn
+      ? formatDuration(latestPoint.onTimeSeconds)
+      : latestPoint.completedRunDurationSeconds !== null
+        ? formatDuration(latestPoint.completedRunDurationSeconds)
+        : '0:00'
+    : '0:00';
 
   const chartLabels =
     signals.length > 0
@@ -111,9 +186,9 @@ export default function HomeScreen() {
               <Text style={styles.label}>Device ID</Text>
               <Text style={styles.value}>{latestPoint?.deviceId ?? 'N/A'}</Text>
 
-              <Text style={styles.label}>Triggered</Text>
+              <Text style={styles.label}>Status</Text>
               <Text style={styles.value}>
-                {latestPoint ? (latestPoint.triggered ? 'Yes' : 'No') : 'N/A'}
+                {latestPoint ? (latestPoint.isOn ? 'ON' : 'OFF') : 'N/A'}
               </Text>
 
               <Text style={styles.label}>Current Value</Text>
@@ -161,12 +236,43 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.card}>
+              <Text style={styles.cardTitle}>Pump Status</Text>
+
+              <View style={styles.statusRow}>
+                <View
+                  style={[
+                    styles.statusBadge,
+                    isCurrentlyOn ? styles.statusBadgeOn : styles.statusBadgeOff,
+                  ]}
+                >
+                  <Text style={styles.statusBadgeText}>
+                    {isCurrentlyOn ? 'ON' : 'OFF'}
+                  </Text>
+                </View>
+
+                <Text style={styles.statusText}>
+                  Threshold: {ON_THRESHOLD_AMPS.toFixed(1)} A
+                </Text>
+              </View>
+
+              <Text style={styles.statusDetail}>
+                {isCurrentlyOn
+                  ? `Pump has been ON for ${latestRunTimeText}`
+                  : `Pump is currently OFF${
+                      latestPoint?.completedRunDurationSeconds !== null
+                        ? ` • Last run time: ${latestRunTimeText}`
+                        : ''
+                    }`}
+              </Text>
+            </View>
+
+            <View style={styles.card}>
               <Text style={styles.cardTitle}>Recent Readings</Text>
 
-              {signals.length === 0 ? (
+              {annotatedSignals.length === 0 ? (
                 <Text style={styles.emptyText}>No readings available.</Text>
               ) : (
-                signals
+                annotatedSignals
                   .slice()
                   .reverse()
                   .map((point, index) => (
@@ -174,7 +280,8 @@ export default function HomeScreen() {
                       key={`${point.timestamp}-${index}`}
                       style={[
                         styles.readingRow,
-                        index !== signals.length - 1 && styles.readingRowBorder,
+                        index !== annotatedSignals.length - 1 &&
+                          styles.readingRowBorder,
                       ]}
                     >
                       <Text style={styles.readingTimestamp}>
@@ -184,7 +291,15 @@ export default function HomeScreen() {
                         Current: {point.value.toFixed(3)} A
                       </Text>
                       <Text style={styles.readingText}>
-                        Triggered: {point.triggered ? 'Yes' : 'No'}
+                        Status: {point.isOn ? 'ON' : 'OFF'}
+                      </Text>
+                      <Text style={styles.readingText}>
+                        On Time:{' '}
+                        {point.isOn
+                          ? formatDuration(point.onTimeSeconds)
+                          : point.completedRunDurationSeconds !== null
+                            ? `${formatDuration(point.completedRunDurationSeconds)} (completed run)`
+                            : '0:00'}
                       </Text>
                     </View>
                   ))
@@ -272,5 +387,37 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#374151',
     marginTop: 2,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  statusBadge: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  statusBadgeOn: {
+    backgroundColor: '#16a34a',
+  },
+  statusBadgeOff: {
+    backgroundColor: '#dc2626',
+  },
+  statusBadgeText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  statusText: {
+    fontSize: 15,
+    color: '#374151',
+    fontWeight: '600',
+  },
+  statusDetail: {
+    fontSize: 15,
+    color: '#111827',
+    marginTop: 4,
   },
 });
