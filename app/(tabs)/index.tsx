@@ -1,7 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Dimensions,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { LineChart } from 'react-native-chart-kit';
 
-type SignalData = {
+const API_BASE = 'https://sensor-backend-1rk2.onrender.com';
+const DEVICE_ID = 'esp32-001';
+const CHART_WIDTH = Dimensions.get('window').width - 64;
+
+type SignalPoint = {
   deviceId: string;
   triggered: boolean;
   value: number;
@@ -9,18 +22,31 @@ type SignalData = {
 };
 
 export default function HomeScreen() {
-  const [signal, setSignal] = useState<SignalData | null>(null);
+  const [signals, setSignals] = useState<SignalPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const fetchSignal = async () => {
     try {
       setError('');
-      const response = await fetch('https://sensor-backend-1rk2.onrender.com/signal');
+
+      const response = await fetch(
+        `${API_BASE}/signals?deviceId=${DEVICE_ID}&limit=20`
+      );
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
       const data = await response.json();
-      setSignal(data);
+
+      if (!Array.isArray(data)) {
+        throw new Error('Backend did not return an array of signal points.');
+      }
+
+      setSignals(data);
     } catch (err) {
-      setError('Could not load signal from backend.');
+      setError('Could not load signal data from backend.');
       console.error(err);
     } finally {
       setLoading(false);
@@ -29,35 +55,136 @@ export default function HomeScreen() {
 
   useEffect(() => {
     fetchSignal();
+
+    const interval = setInterval(() => {
+      fetchSignal();
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, []);
+
+  const latestPoint = signals.length > 0 ? signals[signals.length - 1] : null;
+
+  const chartLabels =
+    signals.length > 0
+      ? signals.map((point, index) => {
+          if (index % 2 !== 0) return '';
+
+          const date = new Date(point.timestamp);
+          const minutes = String(date.getMinutes()).padStart(2, '0');
+          const seconds = String(date.getSeconds()).padStart(2, '0');
+          return `${minutes}:${seconds}`;
+        })
+      : [''];
+
+  const chartValues =
+    signals.length > 0 ? signals.map((point) => point.value) : [0];
+
+  const formatTimestamp = (timestamp: string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleString();
+  };
 
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>ESP32 Signal Viewer</Text>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <Text style={styles.title}>ESP32 Signal Viewer</Text>
 
-      {loading ? (
-        <ActivityIndicator size="large" />
-      ) : error ? (
-        <Text style={styles.error}>{error}</Text>
-      ) : (
-        <View style={styles.card}>
-          <Text style={styles.label}>Device ID</Text>
-          <Text style={styles.value}>{signal?.deviceId}</Text>
+        {loading ? (
+          <ActivityIndicator size="large" />
+        ) : error ? (
+          <Text style={styles.error}>{error}</Text>
+        ) : (
+          <>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Latest Reading</Text>
 
-          <Text style={styles.label}>Triggered</Text>
-          <Text style={styles.value}>{signal?.triggered ? 'Yes' : 'No'}</Text>
+              <Text style={styles.label}>Device ID</Text>
+              <Text style={styles.value}>{latestPoint?.deviceId ?? 'N/A'}</Text>
 
-          <Text style={styles.label}>Value</Text>
-          <Text style={styles.value}>{signal?.value}</Text>
+              <Text style={styles.label}>Triggered</Text>
+              <Text style={styles.value}>
+                {latestPoint ? (latestPoint.triggered ? 'Yes' : 'No') : 'N/A'}
+              </Text>
 
-          <Text style={styles.label}>Timestamp</Text>
-          <Text style={styles.value}>{signal?.timestamp}</Text>
-        </View>
-      )}
+              <Text style={styles.label}>Current Value</Text>
+              <Text style={styles.value}>
+                {latestPoint ? `${latestPoint.value.toFixed(3)} A` : 'N/A'}
+              </Text>
 
-      <Pressable style={styles.button} onPress={fetchSignal}>
-        <Text style={styles.buttonText}>Refresh Signal</Text>
-      </Pressable>
+              <Text style={styles.label}>Timestamp</Text>
+              <Text style={styles.value}>
+                {latestPoint ? formatTimestamp(latestPoint.timestamp) : 'N/A'}
+              </Text>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Current vs Time</Text>
+
+              <LineChart
+                data={{
+                  labels: chartLabels,
+                  datasets: [
+                    {
+                      data: chartValues,
+                    },
+                  ],
+                }}
+                width={CHART_WIDTH}
+                height={220}
+                yAxisLabel=""
+                yAxisSuffix=""
+                chartConfig={{
+                  backgroundColor: '#ffffff',
+                  backgroundGradientFrom: '#ffffff',
+                  backgroundGradientTo: '#ffffff',
+                  decimalPlaces: 2,
+                  color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
+                  labelColor: (opacity = 1) => `rgba(17, 24, 39, ${opacity})`,
+                  propsForDots: {
+                    r: '4',
+                    strokeWidth: '2',
+                    stroke: '#2563eb',
+                  },
+                }}
+                bezier
+                style={styles.chart}
+              />
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Recent Readings</Text>
+
+              {signals.length === 0 ? (
+                <Text style={styles.emptyText}>No readings available.</Text>
+              ) : (
+                signals
+                  .slice()
+                  .reverse()
+                  .map((point, index) => (
+                    <View
+                      key={`${point.timestamp}-${index}`}
+                      style={[
+                        styles.readingRow,
+                        index !== signals.length - 1 && styles.readingRowBorder,
+                      ]}
+                    >
+                      <Text style={styles.readingTimestamp}>
+                        {formatTimestamp(point.timestamp)}
+                      </Text>
+                      <Text style={styles.readingText}>
+                        Current: {point.value.toFixed(3)} A
+                      </Text>
+                      <Text style={styles.readingText}>
+                        Triggered: {point.triggered ? 'Yes' : 'No'}
+                      </Text>
+                    </View>
+                  ))
+              )}
+            </View>
+          </>
+        )}
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -66,8 +193,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f4f7fb',
+  },
+  scrollContent: {
     padding: 24,
-    justifyContent: 'center',
+    paddingBottom: 40,
   },
   title: {
     fontSize: 28,
@@ -87,6 +216,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
   },
+  cardTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 12,
+  },
   label: {
     fontSize: 14,
     fontWeight: '600',
@@ -98,21 +233,36 @@ const styles = StyleSheet.create({
     color: '#111827',
     marginTop: 4,
   },
-  button: {
-    backgroundColor: '#2563eb',
-    paddingVertical: 14,
-    borderRadius: 12,
-  },
-  buttonText: {
-    color: '#ffffff',
-    textAlign: 'center',
-    fontSize: 16,
-    fontWeight: '700',
-  },
   error: {
     textAlign: 'center',
     color: '#dc2626',
     fontSize: 16,
     marginBottom: 24,
+  },
+  chart: {
+    marginTop: 8,
+    borderRadius: 12,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#6b7280',
+  },
+  readingRow: {
+    paddingVertical: 12,
+  },
+  readingRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  readingTimestamp: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  readingText: {
+    fontSize: 15,
+    color: '#374151',
+    marginTop: 2,
   },
 });
