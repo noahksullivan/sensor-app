@@ -13,8 +13,10 @@ import { LineChart } from 'react-native-chart-kit';
 const API_BASE = 'https://sensor-backend-1rk2.onrender.com';
 const DEVICE_ID = 'esp32-001';
 const CHART_WIDTH = Dimensions.get('window').width - 64;
-const SIGNAL_LIMIT = 600;     // last 600 one-second points
-const REFRESH_MS = 2000;      // poll every 2 seconds
+const CHART_POINT_SPACING = 28;   // horizontal pixels per point
+const CHART_LABEL_EVERY = 15;     // only show every 15th timestamp label
+const SIGNAL_LIMIT = 600;         // last 600 one-second points
+const REFRESH_MS = 2000;          // poll every 2 seconds
 const ON_THRESHOLD_AMPS = 0.5;
 
 type SignalPoint = {
@@ -149,10 +151,17 @@ export default function HomeScreen() {
         : '0:00'
     : '0:00';
 
+  const dynamicChartWidth = Math.max(
+    CHART_WIDTH,
+    signals.length * CHART_POINT_SPACING
+  );
+
   const chartLabels =
     signals.length > 0
       ? signals.map((point, index) => {
-          if (index % 5 !== 0 && index !== signals.length - 1) return '';
+          if (index % CHART_LABEL_EVERY !== 0 && index !== signals.length - 1) {
+            return '';
+          }
 
           const date = new Date(point.timestamp);
           const minutes = String(date.getMinutes()).padStart(2, '0');
@@ -205,34 +214,40 @@ export default function HomeScreen() {
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Current vs Time</Text>
 
-              <LineChart
-                data={{
-                  labels: chartLabels,
-                  datasets: [
-                    {
-                      data: chartValues,
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator
+                contentContainerStyle={styles.chartScrollContent}
+              >
+                <LineChart
+                  data={{
+                    labels: chartLabels,
+                    datasets: [
+                      {
+                        data: chartValues,
+                      },
+                    ],
+                  }}
+                  width={dynamicChartWidth}
+                  height={220}
+                  yAxisLabel=""
+                  yAxisSuffix=""
+                  chartConfig={{
+                    backgroundColor: '#ffffff',
+                    backgroundGradientFrom: '#ffffff',
+                    backgroundGradientTo: '#ffffff',
+                    decimalPlaces: 2,
+                    color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
+                    labelColor: (opacity = 1) => `rgba(17, 24, 39, ${opacity})`,
+                    propsForDots: {
+                      r: '3',
+                      strokeWidth: '1',
+                      stroke: '#2563eb',
                     },
-                  ],
-                }}
-                width={CHART_WIDTH}
-                height={220}
-                yAxisLabel=""
-                yAxisSuffix=""
-                chartConfig={{
-                  backgroundColor: '#ffffff',
-                  backgroundGradientFrom: '#ffffff',
-                  backgroundGradientTo: '#ffffff',
-                  decimalPlaces: 2,
-                  color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
-                  labelColor: (opacity = 1) => `rgba(17, 24, 39, ${opacity})`,
-                  propsForDots: {
-                    r: '4',
-                    strokeWidth: '2',
-                    stroke: '#2563eb',
-                  },
-                }}
-                style={styles.chart}
-              />
+                  }}
+                  style={styles.chart}
+                />
+              </ScrollView>
             </View>
 
             <View style={styles.card}>
@@ -365,6 +380,9 @@ const styles = StyleSheet.create({
   chart: {
     marginTop: 8,
     borderRadius: 12,
+  },
+  chartScrollContent: {
+    paddingRight: 12,
   },
   emptyText: {
     fontSize: 16,
