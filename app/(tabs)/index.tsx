@@ -13,6 +13,8 @@ import { LineChart } from 'react-native-chart-kit';
 const API_BASE = 'https://sensor-backend-1rk2.onrender.com';
 const DEVICE_ID = 'esp32-001';
 const CHART_WIDTH = Dimensions.get('window').width - 64;
+const SIGNAL_LIMIT = 60;      // last 60 one-second points
+const REFRESH_MS = 2000;      // poll every 2 seconds
 
 type SignalPoint = {
   deviceId: string;
@@ -31,7 +33,7 @@ export default function HomeScreen() {
       setError('');
 
       const response = await fetch(
-        `${API_BASE}/signals?deviceId=${DEVICE_ID}&limit=20`
+        `${API_BASE}/signals?deviceId=${DEVICE_ID}&limit=${SIGNAL_LIMIT}`
       );
 
       if (!response.ok) {
@@ -44,7 +46,14 @@ export default function HomeScreen() {
         throw new Error('Backend did not return an array of signal points.');
       }
 
-      setSignals(data);
+      const sortedData = data
+        .slice()
+        .sort(
+          (a: SignalPoint, b: SignalPoint) =>
+            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+
+      setSignals(sortedData);
     } catch (err) {
       setError('Could not load signal data from backend.');
       console.error(err);
@@ -58,7 +67,7 @@ export default function HomeScreen() {
 
     const interval = setInterval(() => {
       fetchSignal();
-    }, 5000);
+    }, REFRESH_MS);
 
     return () => clearInterval(interval);
   }, []);
@@ -68,7 +77,7 @@ export default function HomeScreen() {
   const chartLabels =
     signals.length > 0
       ? signals.map((point, index) => {
-          if (index % 2 !== 0) return '';
+          if (index % 5 !== 0 && index !== signals.length - 1) return '';
 
           const date = new Date(point.timestamp);
           const minutes = String(date.getMinutes()).padStart(2, '0');
@@ -147,7 +156,6 @@ export default function HomeScreen() {
                     stroke: '#2563eb',
                   },
                 }}
-                bezier
                 style={styles.chart}
               />
             </View>
