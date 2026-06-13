@@ -14,8 +14,7 @@ const API_BASE = 'https://sensor-backend-1rk2.onrender.com';
 const DEVICE_ID = 'esp32-001';
 const CHART_WIDTH = Dimensions.get('window').width - 64;
 const CHART_POINT_SPACING = 28;   // horizontal pixels per point
-const CHART_LABEL_EVERY = 15;     // only show every 15th timestamp label
-const SIGNAL_LIMIT = 600;         // last 600 one-second points
+const CHART_LABEL_EVERY = 60;     // only show every 15th timestamp label
 const REFRESH_MS = 2000;          // poll every 2 seconds
 const ON_THRESHOLD_AMPS = 0.5;
 
@@ -85,6 +84,35 @@ const annotateSignals = (
   });
 };
 
+const formatChartLabel = (
+  timestamp: string,
+  previousTimestamp?: string | null,
+  forceFullDate = false
+) => {
+  const date = new Date(timestamp);
+  const previousDate = previousTimestamp ? new Date(previousTimestamp) : null;
+
+  const dayChanged =
+    !previousDate ||
+    date.getFullYear() !== previousDate.getFullYear() ||
+    date.getMonth() !== previousDate.getMonth() ||
+    date.getDate() !== previousDate.getDate();
+
+  if (forceFullDate || dayChanged) {
+    return date.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+
+  return date.toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+};
+
 export default function HomeScreen() {
   const [signals, setSignals] = useState<SignalPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,7 +123,7 @@ export default function HomeScreen() {
       setError('');
 
       const response = await fetch(
-        `${API_BASE}/signals?deviceId=${DEVICE_ID}&limit=${SIGNAL_LIMIT}`
+        `${API_BASE}/signals?deviceId=${DEVICE_ID}`
       );
 
       if (!response.ok) {
@@ -156,19 +184,36 @@ export default function HomeScreen() {
     signals.length * CHART_POINT_SPACING
   );
 
-  const chartLabels =
-    signals.length > 0
-      ? signals.map((point, index) => {
-          if (index % CHART_LABEL_EVERY !== 0 && index !== signals.length - 1) {
-            return '';
-          }
+const chartLabels =
+  signals.length > 0
+    ? signals.map((point, index) => {
+        const previousTimestamp =
+          index > 0 ? signals[index - 1].timestamp : null;
 
-          const date = new Date(point.timestamp);
-          const minutes = String(date.getMinutes()).padStart(2, '0');
-          const seconds = String(date.getSeconds()).padStart(2, '0');
-          return `${minutes}:${seconds}`;
-        })
-      : [''];
+        const currentDate = new Date(point.timestamp);
+        const previousDate = previousTimestamp
+          ? new Date(previousTimestamp)
+          : null;
+
+        const dayChanged =
+          !previousDate ||
+          currentDate.getFullYear() !== previousDate.getFullYear() ||
+          currentDate.getMonth() !== previousDate.getMonth() ||
+          currentDate.getDate() !== previousDate.getDate();
+
+        const shouldShowLabel =
+          index === 0 ||
+          index === signals.length - 1 ||
+          dayChanged ||
+          index % CHART_LABEL_EVERY === 0;
+
+        if (!shouldShowLabel) {
+          return '';
+        }
+
+        return formatChartLabel(point.timestamp, previousTimestamp, dayChanged);
+      })
+    : [''];
 
   const chartValues =
     signals.length > 0 ? signals.map((point) => point.value) : [0];
