@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
+  Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -142,9 +143,11 @@ const formatTimestamp = (timestamp: string) => {
 function DevicePanel({
   device,
   signals,
+  onOpenRecentReadings,
 }: {
   device: DeviceConfig;
   signals: SignalPoint[];
+  onOpenRecentReadings: (device: DeviceConfig) => void;
 }) {
   const annotatedSignals = annotateSignals(signals, ON_THRESHOLD_AMPS);
 
@@ -212,28 +215,6 @@ function DevicePanel({
     <View style={styles.deviceSection}>
       <Text style={styles.deviceHeader}>{device.label}</Text>
       <Text style={styles.deviceSubheader}>{device.deviceId}</Text>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Latest Reading</Text>
-
-        <Text style={styles.label}>Device ID</Text>
-        <Text style={styles.value}>{latestPoint?.deviceId ?? 'N/A'}</Text>
-
-        <Text style={styles.label}>Status</Text>
-        <Text style={styles.value}>
-          {latestPoint ? (latestPoint.isOn ? 'ON' : 'OFF') : 'N/A'}
-        </Text>
-
-        <Text style={styles.label}>Current Value</Text>
-        <Text style={styles.value}>
-          {latestPoint ? `${latestPoint.value.toFixed(3)} A` : 'N/A'}
-        </Text>
-
-        <Text style={styles.label}>Timestamp</Text>
-        <Text style={styles.value}>
-          {latestPoint ? formatTimestamp(latestPoint.timestamp) : 'N/A'}
-        </Text>
-      </View>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Current vs Time</Text>
@@ -318,46 +299,103 @@ function DevicePanel({
         </Text>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Recent Readings</Text>
+      <Pressable
+        style={({ pressed }) => [
+          styles.card,
+          styles.latestReadingCard,
+          pressed && styles.latestReadingCardPressed,
+        ]}
+        onPress={() => onOpenRecentReadings(device)}
+      >
+        <View style={styles.latestReadingHeaderRow}>
+          <Text style={styles.cardTitle}>Latest Reading</Text>
+          <Text style={styles.openDetailsText}>View recent readings →</Text>
+        </View>
 
-        {annotatedSignals.length === 0 ? (
-          <Text style={styles.emptyText}>No readings available.</Text>
-        ) : (
-          annotatedSignals
-            .slice()
-            .reverse()
-            .map((point, index) => (
-              <View
-                key={`${device.deviceId}-${point.timestamp}-${index}`}
-                style={[
-                  styles.readingRow,
-                  index !== annotatedSignals.length - 1 &&
-                    styles.readingRowBorder,
-                ]}
-              >
-                <Text style={styles.readingTimestamp}>
-                  {formatTimestamp(point.timestamp)}
-                </Text>
-                <Text style={styles.readingText}>
-                  Current: {point.value.toFixed(3)} A
-                </Text>
-                <Text style={styles.readingText}>
-                  Status: {point.isOn ? 'ON' : 'OFF'}
-                </Text>
-                <Text style={styles.readingText}>
-                  On Time:{' '}
-                  {point.isOn
-                    ? formatDuration(point.onTimeSeconds)
-                    : point.completedRunDurationSeconds !== null
-                      ? `${formatDuration(point.completedRunDurationSeconds)} (completed run)`
-                      : '0:00'}
-                </Text>
-              </View>
-            ))
-        )}
-      </View>
+        <Text style={styles.label}>Device ID</Text>
+        <Text style={styles.value}>{latestPoint?.deviceId ?? 'N/A'}</Text>
+
+        <Text style={styles.label}>Status</Text>
+        <Text style={styles.value}>
+          {latestPoint ? (latestPoint.isOn ? 'ON' : 'OFF') : 'N/A'}
+        </Text>
+
+        <Text style={styles.label}>Current Value</Text>
+        <Text style={styles.value}>
+          {latestPoint ? `${latestPoint.value.toFixed(3)} A` : 'N/A'}
+        </Text>
+
+        <Text style={styles.label}>Timestamp</Text>
+        <Text style={styles.value}>
+          {latestPoint ? formatTimestamp(latestPoint.timestamp) : 'N/A'}
+        </Text>
+      </Pressable>
     </View>
+  );
+}
+
+function RecentReadingsScreen({
+  device,
+  signals,
+  onBack,
+}: {
+  device: DeviceConfig;
+  signals: SignalPoint[];
+  onBack: () => void;
+}) {
+  const annotatedSignals = annotateSignals(signals, ON_THRESHOLD_AMPS);
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <Pressable style={styles.backButton} onPress={onBack}>
+          <Text style={styles.backButtonText}>← Back</Text>
+        </Pressable>
+
+        <Text style={styles.title}>{device.label} Recent Readings</Text>
+        <Text style={styles.detailSubheader}>{device.deviceId}</Text>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Recent Readings</Text>
+
+          {annotatedSignals.length === 0 ? (
+            <Text style={styles.emptyText}>No readings available.</Text>
+          ) : (
+            annotatedSignals
+              .slice()
+              .reverse()
+              .map((point, index) => (
+                <View
+                  key={`${device.deviceId}-${point.timestamp}-${index}`}
+                  style={[
+                    styles.readingRow,
+                    index !== annotatedSignals.length - 1 &&
+                      styles.readingRowBorder,
+                  ]}
+                >
+                  <Text style={styles.readingTimestamp}>
+                    {formatTimestamp(point.timestamp)}
+                  </Text>
+                  <Text style={styles.readingText}>
+                    Current: {point.value.toFixed(3)} A
+                  </Text>
+                  <Text style={styles.readingText}>
+                    Status: {point.isOn ? 'ON' : 'OFF'}
+                  </Text>
+                  <Text style={styles.readingText}>
+                    On Time:{' '}
+                    {point.isOn
+                      ? formatDuration(point.onTimeSeconds)
+                      : point.completedRunDurationSeconds !== null
+                        ? `${formatDuration(point.completedRunDurationSeconds)} (completed run)`
+                        : '0:00'}
+                  </Text>
+                </View>
+              ))
+          )}
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -366,6 +404,12 @@ export default function HomeScreen() {
   const [signalMap, setSignalMap] = useState<Record<string, SignalPoint[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+
+  const selectedDevice = useMemo(
+    () => devices.find((device) => device.deviceId === selectedDeviceId) ?? null,
+    [devices, selectedDeviceId]
+  );
 
   const fetchDevices = async () => {
     try {
@@ -459,6 +503,16 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, [devices]);
 
+  if (selectedDevice && !loading && !error) {
+    return (
+      <RecentReadingsScreen
+        device={selectedDevice}
+        signals={signalMap[selectedDevice.deviceId] ?? []}
+        onBack={() => setSelectedDeviceId(null)}
+      />
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -474,6 +528,9 @@ export default function HomeScreen() {
               key={device.deviceId}
               device={device}
               signals={signalMap[device.deviceId] ?? []}
+              onOpenRecentReadings={(selected) =>
+                setSelectedDeviceId(selected.deviceId)
+              }
             />
           ))
         )}
@@ -512,6 +569,13 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     marginBottom: 16,
   },
+  detailSubheader: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginTop: -12,
+    marginBottom: 24,
+    textAlign: 'center',
+  },
   card: {
     backgroundColor: '#ffffff',
     borderRadius: 16,
@@ -522,6 +586,25 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
+  },
+  latestReadingCard: {
+    borderWidth: 1,
+    borderColor: '#dbe4f0',
+  },
+  latestReadingCardPressed: {
+    opacity: 0.85,
+  },
+  latestReadingHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 4,
+  },
+  openDetailsText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2563eb',
   },
   cardTitle: {
     fontSize: 20,
@@ -624,5 +707,23 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#111827',
     marginTop: 4,
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#ffffff',
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
+  backButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
   },
 });
