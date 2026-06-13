@@ -13,8 +13,11 @@ import { LineChart } from 'react-native-chart-kit';
 const API_BASE = 'https://sensor-backend-1rk2.onrender.com';
 const DEVICE_ID = 'esp32-001';
 const CHART_WIDTH = Dimensions.get('window').width - 64;
+const CHART_HEIGHT = 220;
+const CHART_SEGMENTS = 4;
+const Y_AXIS_WIDTH = 56;
 const CHART_POINT_SPACING = 28;   // horizontal pixels per point
-const CHART_LABEL_EVERY = 60;     // only show every 15th timestamp label
+const CHART_LABEL_EVERY = 60;     // only show every 60th timestamp label
 const REFRESH_MS = 2000;          // poll every 2 seconds
 const ON_THRESHOLD_AMPS = 0.5;
 
@@ -113,6 +116,15 @@ const formatChartLabel = (
   });
 };
 
+const buildYAxisLabels = (values: number[], segments: number) => {
+  const maxValue = Math.max(...values, 0.1);
+
+  return Array.from({ length: segments + 1 }, (_, index) => {
+    const value = (maxValue / segments) * (segments - index);
+    return value.toFixed(2);
+  });
+};
+
 export default function HomeScreen() {
   const [signals, setSignals] = useState<SignalPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -184,39 +196,45 @@ export default function HomeScreen() {
     signals.length * CHART_POINT_SPACING
   );
 
-const chartLabels =
-  signals.length > 0
-    ? signals.map((point, index) => {
-        const previousTimestamp =
-          index > 0 ? signals[index - 1].timestamp : null;
+  const chartLabels =
+    signals.length > 0
+      ? signals.map((point, index) => {
+          const previousTimestamp =
+            index > 0 ? signals[index - 1].timestamp : null;
 
-        const currentDate = new Date(point.timestamp);
-        const previousDate = previousTimestamp
-          ? new Date(previousTimestamp)
-          : null;
+          const currentDate = new Date(point.timestamp);
+          const previousDate = previousTimestamp
+            ? new Date(previousTimestamp)
+            : null;
 
-        const dayChanged =
-          !previousDate ||
-          currentDate.getFullYear() !== previousDate.getFullYear() ||
-          currentDate.getMonth() !== previousDate.getMonth() ||
-          currentDate.getDate() !== previousDate.getDate();
+          const dayChanged =
+            !previousDate ||
+            currentDate.getFullYear() !== previousDate.getFullYear() ||
+            currentDate.getMonth() !== previousDate.getMonth() ||
+            currentDate.getDate() !== previousDate.getDate();
 
-        const shouldShowLabel =
-          index === 0 ||
-          index === signals.length - 1 ||
-          dayChanged ||
-          index % CHART_LABEL_EVERY === 0;
+          const shouldShowLabel =
+            index === 0 ||
+            index === signals.length - 1 ||
+            dayChanged ||
+            index % CHART_LABEL_EVERY === 0;
 
-        if (!shouldShowLabel) {
-          return '';
-        }
+          if (!shouldShowLabel) {
+            return '';
+          }
 
-        return formatChartLabel(point.timestamp, previousTimestamp, dayChanged);
-      })
-    : [''];
+          return formatChartLabel(
+            point.timestamp,
+            previousTimestamp,
+            dayChanged
+          );
+        })
+      : [''];
 
   const chartValues =
     signals.length > 0 ? signals.map((point) => point.value) : [0];
+
+  const yAxisLabels = buildYAxisLabels(chartValues, CHART_SEGMENTS);
 
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
@@ -259,40 +277,56 @@ const chartLabels =
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Current vs Time</Text>
 
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator
-                contentContainerStyle={styles.chartScrollContent}
-              >
-                <LineChart
-                  data={{
-                    labels: chartLabels,
-                    datasets: [
-                      {
-                        data: chartValues,
+              <View style={styles.chartRow}>
+                <View style={styles.yAxisColumn}>
+                  {yAxisLabels.map((label, index) => (
+                    <Text
+                      key={`${label}-${index}`}
+                      style={styles.yAxisLabelText}
+                    >
+                      {label}
+                    </Text>
+                  ))}
+                </View>
+
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator
+                  contentContainerStyle={styles.chartScrollContent}
+                >
+                  <LineChart
+                    data={{
+                      labels: chartLabels,
+                      datasets: [
+                        {
+                          data: chartValues,
+                        },
+                      ],
+                    }}
+                    width={dynamicChartWidth}
+                    height={CHART_HEIGHT}
+                    withHorizontalLabels={false}
+                    segments={CHART_SEGMENTS}
+                    fromZero
+                    yAxisLabel=""
+                    yAxisSuffix=""
+                    chartConfig={{
+                      backgroundColor: '#ffffff',
+                      backgroundGradientFrom: '#ffffff',
+                      backgroundGradientTo: '#ffffff',
+                      decimalPlaces: 2,
+                      color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
+                      labelColor: (opacity = 1) => `rgba(17, 24, 39, ${opacity})`,
+                      propsForDots: {
+                        r: '3',
+                        strokeWidth: '1',
+                        stroke: '#2563eb',
                       },
-                    ],
-                  }}
-                  width={dynamicChartWidth}
-                  height={220}
-                  yAxisLabel=""
-                  yAxisSuffix=""
-                  chartConfig={{
-                    backgroundColor: '#ffffff',
-                    backgroundGradientFrom: '#ffffff',
-                    backgroundGradientTo: '#ffffff',
-                    decimalPlaces: 2,
-                    color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
-                    labelColor: (opacity = 1) => `rgba(17, 24, 39, ${opacity})`,
-                    propsForDots: {
-                      r: '3',
-                      strokeWidth: '1',
-                      stroke: '#2563eb',
-                    },
-                  }}
-                  style={styles.chart}
-                />
-              </ScrollView>
+                    }}
+                    style={styles.chart}
+                  />
+                </ScrollView>
+              </View>
             </View>
 
             <View style={styles.card}>
@@ -421,6 +455,24 @@ const styles = StyleSheet.create({
     color: '#dc2626',
     fontSize: 16,
     marginBottom: 24,
+  },
+  chartRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  yAxisColumn: {
+    width: Y_AXIS_WIDTH,
+    height: CHART_HEIGHT,
+    justifyContent: 'space-between',
+    paddingTop: 16,
+    paddingBottom: 28,
+    marginTop: 8,
+  },
+  yAxisLabelText: {
+    fontSize: 12,
+    color: '#6b7280',
+    textAlign: 'right',
+    paddingRight: 8,
   },
   chart: {
     marginTop: 8,
