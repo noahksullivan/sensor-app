@@ -40,8 +40,8 @@ type AnnotatedSignalPoint = SignalPoint & {
 };
 
 const FALLBACK_DEVICES: DeviceConfig[] = [
-  { deviceId: 'esp32-001', label: 'Pump 1' },
-  { deviceId: 'esp32-002', label: 'Pump 2' },
+  { deviceId: 'esp32-001', label: 'Hilltop' },
+  { deviceId: 'esp32-002', label: 'Site 3' },
 ];
 
 const formatDuration = (totalSeconds: number) => {
