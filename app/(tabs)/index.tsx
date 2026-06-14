@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -20,9 +20,9 @@ const CHART_POINT_SPACING = 28;
 const CHART_LABEL_EVERY = 60;
 const REFRESH_MS = 2000;
 const ON_THRESHOLD_AMPS = 0.5;
-const DASHBOARD_SIGNAL_LIMIT = 600;
 const HISTORY_BUCKET_COUNT = 800;
 const HISTORY_PAGE_SIZE = 200;
+const DASHBOARD_TRANSITION_LIMIT = 20;
 
 type SignalPoint = {
   deviceId: string;
@@ -34,6 +34,25 @@ type SignalPoint = {
 type DeviceConfig = {
   deviceId: string;
   label: string;
+};
+
+type TransitionEntry = {
+  state: 'ON' | 'OFF';
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+};
+
+type DashboardDeviceData = {
+  deviceId: string;
+  thresholdAmps: number;
+  latestSignal: SignalPoint | null;
+  currentState: 'ON' | 'OFF' | null;
+  currentStateStartedAt: string | null;
+  currentStateDurationSeconds: number;
+  lastCompletedOnDurationSeconds: number | null;
+  lastCompletedOffDurationSeconds: number | null;
+  recentTransitions: TransitionEntry[];
 };
 
 type AnnotatedSignalPoint = SignalPoint & {
@@ -64,11 +83,31 @@ const FALLBACK_DEVICES: DeviceConfig[] = [
   { deviceId: 'esp32-002', label: 'Site 3' },
 ];
 
+const createEmptyDashboardData = (deviceId: string): DashboardDeviceData => ({
+  deviceId,
+  thresholdAmps: ON_THRESHOLD_AMPS,
+  latestSignal: null,
+  currentState: null,
+  currentStateStartedAt: null,
+  currentStateDurationSeconds: 0,
+  lastCompletedOnDurationSeconds: null,
+  lastCompletedOffDurationSeconds: null,
+  recentTransitions: [],
+});
+
 const formatDuration = (totalSeconds: number) => {
   const safeSeconds = Math.max(0, totalSeconds);
   const minutes = Math.floor(safeSeconds / 60);
   const seconds = safeSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
+const formatOptionalDuration = (totalSeconds: number | null) => {
+  if (totalSeconds === null) {
+    return 'N/A';
+  }
+
+  return formatDuration(totalSeconds);
 };
 
 const formatTimestamp = (timestamp: string) => {
@@ -201,25 +240,6 @@ const sortSignalsAscending = (points: SignalPoint[]) =>
         new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     );
 
-const mergeSignals = (
-  existingSignals: SignalPoint[],
-  incomingSignals: SignalPoint[]
-) => {
-  const mergedMap = new Map<string, SignalPoint>();
-
-  existingSignals.forEach((point) => {
-    mergedMap.set(point.timestamp, point);
-  });
-
-  incomingSignals.forEach((point) => {
-    mergedMap.set(point.timestamp, point);
-  });
-
-  return sortSignalsAscending(Array.from(mergedMap.values())).slice(
-    -DASHBOARD_SIGNAL_LIMIT
-  );
-};
-
 function SignalChartCard({
   title,
   signals,
@@ -235,7 +255,8 @@ function SignalChartCard({
   );
 
   const chartLabels = buildChartLabels(signals);
-  const chartValues = signals.length > 0 ? signals.map((point) => point.value) : [0];
+  const chartValues =
+    signals.length > 0 ? signals.map((point) => point.value) : [0];
   const yAxisLabels = buildYAxisLabels(chartValues, CHART_SEGMENTS);
 
   return (
@@ -295,14 +316,21 @@ function SignalChartCard({
 }
 
 function PumpStatusCard({
-  isCurrentlyOn,
-  latestRunTimeText,
-  latestPoint,
+  dashboardData,
 }: {
-  isCurrentlyOn: boolean;
-  latestRunTimeText: string;
-  latestPoint: AnnotatedSignalPoint | null;
+  dashboardData: DashboardDeviceData;
 }) {
+  if (!dashboardData.latestSignal || !dashboardData.currentState) {
+    return (
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Pump Status</Text>
+        <Text style={styles.emptyText}>No readings available yet.</Text>
+      </View>
+    );
+  }
+
+  const isCurrentlyOn = dashboardData.currentState === 'ON';
+
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Pump Status</Text>
@@ -320,65 +348,135 @@ function PumpStatusCard({
         </View>
 
         <Text style={styles.statusText}>
-          Threshold: {ON_THRESHOLD_AMPS.toFixed(1)} A
+          Threshold: {dashboardData.thresholdAmps.toFixed(1)} A
         </Text>
       </View>
 
       <Text style={styles.statusDetail}>
         {isCurrentlyOn
-          ? `Pump has been ON for ${latestRunTimeText}`
-          : `Pump is currently OFF${
-              latestPoint?.completedRunDurationSeconds !== null
-                ? ` • Last run time: ${latestRunTimeText}`
-                : ''
-            }`}
+          ? `Pump has been ON for ${formatDuration(
+              dashboardData.currentStateDurationSeconds
+            )}`
+          : `Pump has been OFF for ${formatDuration(
+              dashboardData.currentStateDurationSeconds
+            )}`}
       </Text>
+    </View>
+  );
+}
+
+function StateLogCard({
+  dashboardData,
+}: {
+  dashboardData: DashboardDeviceData;
+}) {
+  const currentState = dashboardData.currentState;
+  const currentStartedAt = dashboardData.currentStateStartedAt;
+
+  const onDurationLabel =
+    currentState === 'ON' ? 'Current ON Time' : 'Last ON Time';
+  const onDurationValue =
+    currentState === 'ON'
+      ? formatDuration(dashboardData.currentStateDurationSeconds)
+      : formatOptionalDuration(dashboardData.lastCompletedOnDurationSeconds);
+
+  const offDurationLabel =
+    currentState === 'OFF' ? 'Current OFF Time' : 'Last OFF Time';
+  const offDurationValue =
+    currentState === 'OFF'
+      ? formatDuration(dashboardData.currentStateDurationSeconds)
+      : formatOptionalDuration(dashboardData.lastCompletedOffDurationSeconds);
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>State Change Log</Text>
+      <Text style={styles.helperText}>
+        Logs threshold crossings at {dashboardData.thresholdAmps.toFixed(1)} A
+      </Text>
+
+      <View style={styles.stateSummaryGrid}>
+        <View style={styles.stateSummaryItem}>
+          <Text style={styles.stateSummaryLabel}>Current State</Text>
+          <Text style={styles.stateSummaryValue}>{currentState ?? 'N/A'}</Text>
+        </View>
+
+        <View style={styles.stateSummaryItem}>
+          <Text style={styles.stateSummaryLabel}>Current State Since</Text>
+          <Text style={styles.stateSummaryValueSmall}>
+            {currentStartedAt ? formatTimestamp(currentStartedAt) : 'N/A'}
+          </Text>
+        </View>
+
+        <View style={styles.stateSummaryItem}>
+          <Text style={styles.stateSummaryLabel}>{onDurationLabel}</Text>
+          <Text style={styles.stateSummaryValue}>{onDurationValue}</Text>
+        </View>
+
+        <View style={styles.stateSummaryItem}>
+          <Text style={styles.stateSummaryLabel}>{offDurationLabel}</Text>
+          <Text style={styles.stateSummaryValue}>{offDurationValue}</Text>
+        </View>
+      </View>
+
+      <Text style={styles.sectionLabel}>Recent State Changes</Text>
+
+      {dashboardData.recentTransitions.length === 0 ? (
+        <Text style={styles.emptyText}>No completed state changes yet.</Text>
+      ) : (
+        dashboardData.recentTransitions.map((entry, index) => (
+          <View
+            key={`${entry.state}-${entry.startedAt}-${entry.endedAt}-${index}`}
+            style={[
+              styles.transitionRow,
+              index !== dashboardData.recentTransitions.length - 1 &&
+                styles.transitionRowBorder,
+            ]}
+          >
+            <View
+              style={[
+                styles.transitionBadge,
+                entry.state === 'ON'
+                  ? styles.transitionBadgeOn
+                  : styles.transitionBadgeOff,
+              ]}
+            >
+              <Text style={styles.transitionBadgeText}>{entry.state}</Text>
+            </View>
+
+            <View style={styles.transitionContent}>
+              <Text style={styles.transitionTimeText}>
+                {formatTimestamp(entry.startedAt)} → {formatTimestamp(entry.endedAt)}
+              </Text>
+              <Text style={styles.transitionDurationText}>
+                {entry.state} for {formatDuration(entry.durationSeconds)}
+              </Text>
+            </View>
+          </View>
+        ))
+      )}
     </View>
   );
 }
 
 function DevicePanel({
   device,
-  signals,
+  dashboardData,
   onOpenRecentReadings,
 }: {
   device: DeviceConfig;
-  signals: SignalPoint[];
+  dashboardData: DashboardDeviceData;
   onOpenRecentReadings: (device: DeviceConfig) => void;
 }) {
-  const annotatedSignals = annotateSignals(signals, ON_THRESHOLD_AMPS);
-
-  const latestPoint =
-    annotatedSignals.length > 0
-      ? annotatedSignals[annotatedSignals.length - 1]
-      : null;
-
-  const isCurrentlyOn = latestPoint?.isOn ?? false;
-
-  const latestRunTimeText = latestPoint
-    ? latestPoint.isOn
-      ? formatDuration(latestPoint.onTimeSeconds)
-      : latestPoint.completedRunDurationSeconds !== null
-        ? formatDuration(latestPoint.completedRunDurationSeconds)
-        : '0:00'
-    : '0:00';
+  const latestSignal = dashboardData.latestSignal;
 
   return (
     <View style={styles.deviceSection}>
       <Text style={styles.deviceHeader}>{device.label}</Text>
       <Text style={styles.deviceSubheader}>{device.deviceId}</Text>
 
-      <SignalChartCard
-        title="Current vs Time"
-        signals={signals}
-        helperText={`Dashboard view • last ${DASHBOARD_SIGNAL_LIMIT} seconds max`}
-      />
+      <StateLogCard dashboardData={dashboardData} />
 
-      <PumpStatusCard
-        isCurrentlyOn={isCurrentlyOn}
-        latestRunTimeText={latestRunTimeText}
-        latestPoint={latestPoint}
-      />
+      <PumpStatusCard dashboardData={dashboardData} />
 
       <Pressable
         style={({ pressed }) => [
@@ -394,21 +492,21 @@ function DevicePanel({
         </View>
 
         <Text style={styles.label}>Device ID</Text>
-        <Text style={styles.value}>{latestPoint?.deviceId ?? 'N/A'}</Text>
+        <Text style={styles.value}>{latestSignal?.deviceId ?? 'N/A'}</Text>
 
         <Text style={styles.label}>Status</Text>
         <Text style={styles.value}>
-          {latestPoint ? (latestPoint.isOn ? 'ON' : 'OFF') : 'N/A'}
+          {dashboardData.currentState ?? 'N/A'}
         </Text>
 
         <Text style={styles.label}>Current Value</Text>
         <Text style={styles.value}>
-          {latestPoint ? `${latestPoint.value.toFixed(3)} A` : 'N/A'}
+          {latestSignal ? `${latestSignal.value.toFixed(3)} A` : 'N/A'}
         </Text>
 
         <Text style={styles.label}>Timestamp</Text>
         <Text style={styles.value}>
-          {latestPoint ? formatTimestamp(latestPoint.timestamp) : 'N/A'}
+          {latestSignal ? formatTimestamp(latestSignal.timestamp) : 'N/A'}
         </Text>
       </Pressable>
     </View>
@@ -497,7 +595,9 @@ function RecentReadingsScreen({
         before: nextBefore,
       });
 
-      const response = await fetch(`${API_BASE}/signals/page?${params.toString()}`);
+      const response = await fetch(
+        `${API_BASE}/signals/page?${params.toString()}`
+      );
 
       if (!response.ok) {
         throw new Error(`Page request failed with status ${response.status}`);
@@ -505,7 +605,10 @@ function RecentReadingsScreen({
 
       const pageData = (await response.json()) as SignalPageResponse;
 
-      setHistoryReadings((previous) => [...previous, ...(pageData.readings ?? [])]);
+      setHistoryReadings((previous) => [
+        ...previous,
+        ...(pageData.readings ?? []),
+      ]);
       setNextBefore(pageData.nextBefore ?? null);
       setHasMore(Boolean(pageData.hasMore));
     } catch (err) {
@@ -595,7 +698,9 @@ function RecentReadingsScreen({
                   {loadingOlder ? (
                     <ActivityIndicator size="small" />
                   ) : (
-                    <Text style={styles.loadOlderButtonText}>Load older readings</Text>
+                    <Text style={styles.loadOlderButtonText}>
+                      Load older readings
+                    </Text>
                   )}
                 </Pressable>
               ) : (
@@ -611,14 +716,12 @@ function RecentReadingsScreen({
 
 export default function HomeScreen() {
   const [devices, setDevices] = useState<DeviceConfig[]>(FALLBACK_DEVICES);
-  const [signalMap, setSignalMap] = useState<Record<string, SignalPoint[]>>({});
+  const [dashboardMap, setDashboardMap] = useState<
+    Record<string, DashboardDeviceData>
+  >({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-
-  const devicesRef = useRef<DeviceConfig[]>(FALLBACK_DEVICES);
-  const lastTimestampMapRef = useRef<Record<string, string | null>>({});
-  const initializedRef = useRef(false);
 
   const selectedDevice = useMemo(
     () => devices.find((device) => device.deviceId === selectedDeviceId) ?? null,
@@ -645,119 +748,38 @@ export default function HomeScreen() {
     return FALLBACK_DEVICES;
   };
 
-  const fetchRecentSignalsForDevices = async (deviceList: DeviceConfig[]) => {
+  const fetchDashboardDataForDevices = async (deviceList: DeviceConfig[]) => {
     const responses = await Promise.all(
       deviceList.map(async (device) => {
         const params = new URLSearchParams({
           deviceId: device.deviceId,
-          limit: String(DASHBOARD_SIGNAL_LIMIT),
+          transitionLimit: String(DASHBOARD_TRANSITION_LIMIT),
         });
 
-        const response = await fetch(`${API_BASE}/signals?${params.toString()}`);
+        const response = await fetch(`${API_BASE}/dashboard?${params.toString()}`);
 
         if (!response.ok) {
           throw new Error(
-            `Signals request failed for ${device.deviceId} with status ${response.status}`
+            `Dashboard request failed for ${device.deviceId} with status ${response.status}`
           );
         }
 
-        const data = await response.json();
-
-        if (!Array.isArray(data)) {
-          throw new Error(`Backend did not return an array for ${device.deviceId}.`);
-        }
+        const data = (await response.json()) as DashboardDeviceData;
 
         return {
           deviceId: device.deviceId,
-          signals: sortSignalsAscending(data as SignalPoint[]),
+          dashboardData: data,
         };
       })
     );
 
-    const nextSignalMap: Record<string, SignalPoint[]> = {};
-    const nextLastTimestampMap: Record<string, string | null> = {};
+    const nextDashboardMap: Record<string, DashboardDeviceData> = {};
 
-    responses.forEach(({ deviceId, signals }) => {
-      nextSignalMap[deviceId] = signals;
-      nextLastTimestampMap[deviceId] =
-        signals.length > 0 ? signals[signals.length - 1].timestamp : null;
+    responses.forEach(({ deviceId, dashboardData }) => {
+      nextDashboardMap[deviceId] = dashboardData;
     });
 
-    return {
-      nextSignalMap,
-      nextLastTimestampMap,
-    };
-  };
-
-  const pollDashboardSignals = async () => {
-    if (!initializedRef.current) {
-      return;
-    }
-
-    const deviceList = devicesRef.current;
-
-    if (deviceList.length === 0) {
-      return;
-    }
-
-    try {
-      const responses = await Promise.all(
-        deviceList.map(async (device) => {
-          const params = new URLSearchParams({
-            deviceId: device.deviceId,
-          });
-
-          const since = lastTimestampMapRef.current[device.deviceId];
-
-          if (since) {
-            params.set('since', since);
-          } else {
-            params.set('limit', String(DASHBOARD_SIGNAL_LIMIT));
-          }
-
-          const response = await fetch(`${API_BASE}/signals?${params.toString()}`);
-
-          if (!response.ok) {
-            throw new Error(
-              `Signals request failed for ${device.deviceId} with status ${response.status}`
-            );
-          }
-
-          const data = await response.json();
-
-          if (!Array.isArray(data)) {
-            throw new Error(`Backend did not return an array for ${device.deviceId}.`);
-          }
-
-          return {
-            deviceId: device.deviceId,
-            signals: sortSignalsAscending(data as SignalPoint[]),
-          };
-        })
-      );
-
-      setSignalMap((previous) => {
-        const nextSignalMap = { ...previous };
-        const nextLastTimestampMap = { ...lastTimestampMapRef.current };
-
-        responses.forEach(({ deviceId, signals }) => {
-          nextSignalMap[deviceId] = mergeSignals(
-            previous[deviceId] ?? [],
-            signals
-          );
-
-          const latestPoint =
-            nextSignalMap[deviceId][nextSignalMap[deviceId].length - 1] ?? null;
-
-          nextLastTimestampMap[deviceId] = latestPoint?.timestamp ?? null;
-        });
-
-        lastTimestampMapRef.current = nextLastTimestampMap;
-        return nextSignalMap;
-      });
-    } catch (err) {
-      console.error('Dashboard poll failed.', err);
-    }
+    return nextDashboardMap;
   };
 
   useEffect(() => {
@@ -775,26 +797,22 @@ export default function HomeScreen() {
         }
 
         setDevices(deviceList);
-        devicesRef.current = deviceList;
 
-        const { nextSignalMap, nextLastTimestampMap } =
-          await fetchRecentSignalsForDevices(deviceList);
+        const nextDashboardMap = await fetchDashboardDataForDevices(deviceList);
 
         if (isCancelled) {
           return;
         }
 
-        setSignalMap(nextSignalMap);
-        lastTimestampMapRef.current = nextLastTimestampMap;
+        setDashboardMap(nextDashboardMap);
       } catch (err) {
         console.error(err);
 
         if (!isCancelled) {
-          setError('Could not load signal data from backend.');
+          setError('Could not load dashboard data from backend.');
         }
       } finally {
         if (!isCancelled) {
-          initializedRef.current = true;
           setLoading(false);
         }
       }
@@ -802,15 +820,23 @@ export default function HomeScreen() {
 
     initialize();
 
-    const interval = setInterval(() => {
-      pollDashboardSignals();
+    const interval = setInterval(async () => {
+      try {
+        const nextDashboardMap = await fetchDashboardDataForDevices(devices);
+
+        if (!isCancelled) {
+          setDashboardMap(nextDashboardMap);
+        }
+      } catch (err) {
+        console.error('Dashboard poll failed.', err);
+      }
     }, REFRESH_MS);
 
     return () => {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [devices.length]);
 
   if (selectedDevice && !loading && !error) {
     return (
@@ -835,7 +861,10 @@ export default function HomeScreen() {
             <DevicePanel
               key={device.deviceId}
               device={device}
-              signals={signalMap[device.deviceId] ?? []}
+              dashboardData={
+                dashboardMap[device.deviceId] ??
+                createEmptyDashboardData(device.deviceId)
+              }
               onOpenRecentReadings={(selected) =>
                 setSelectedDeviceId(selected.deviceId)
               }
@@ -971,6 +1000,81 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 16,
     color: '#6b7280',
+  },
+  stateSummaryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 16,
+  },
+  stateSummaryItem: {
+    width: '48%',
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    padding: 12,
+  },
+  stateSummaryLabel: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '600',
+  },
+  stateSummaryValue: {
+    fontSize: 17,
+    color: '#111827',
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  stateSummaryValueSmall: {
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  sectionLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 8,
+  },
+  transitionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 12,
+  },
+  transitionRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  transitionBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    marginTop: 2,
+  },
+  transitionBadgeOn: {
+    backgroundColor: '#16a34a',
+  },
+  transitionBadgeOff: {
+    backgroundColor: '#dc2626',
+  },
+  transitionBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  transitionContent: {
+    flex: 1,
+  },
+  transitionTimeText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  transitionDurationText: {
+    fontSize: 14,
+    color: '#374151',
+    marginTop: 4,
   },
   readingRow: {
     paddingVertical: 12,
