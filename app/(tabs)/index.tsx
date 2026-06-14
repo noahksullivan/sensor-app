@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -20,6 +20,9 @@ const CHART_POINT_SPACING = 28;
 const CHART_LABEL_EVERY = 60;
 const REFRESH_MS = 2000;
 const ON_THRESHOLD_AMPS = 0.5;
+const DASHBOARD_SIGNAL_LIMIT = 600;
+const HISTORY_BUCKET_COUNT = 800;
+const HISTORY_PAGE_SIZE = 200;
 
 type SignalPoint = {
   deviceId: string;
@@ -39,6 +42,23 @@ type AnnotatedSignalPoint = SignalPoint & {
   completedRunDurationSeconds: number | null;
 };
 
+type SignalSummaryResponse = {
+  deviceId: string;
+  totalPoints: number;
+  bucketCount: number;
+  oldestTimestamp: string | null;
+  latestTimestamp: string | null;
+  points: SignalPoint[];
+};
+
+type SignalPageResponse = {
+  deviceId: string;
+  totalPoints: number;
+  hasMore: boolean;
+  nextBefore: string | null;
+  readings: SignalPoint[];
+};
+
 const FALLBACK_DEVICES: DeviceConfig[] = [
   { deviceId: 'esp32-001', label: 'Hilltop' },
   { deviceId: 'esp32-002', label: 'Site 3' },
@@ -49,6 +69,11 @@ const formatDuration = (totalSeconds: number) => {
   const minutes = Math.floor(safeSeconds / 60);
   const seconds = safeSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
+const formatTimestamp = (timestamp: string) => {
+  const date = new Date(timestamp);
+  return date.toLocaleString();
 };
 
 const annotateSignals = (
@@ -126,6 +151,39 @@ const formatChartLabel = (
   });
 };
 
+const buildChartLabels = (signals: SignalPoint[]) => {
+  if (signals.length === 0) {
+    return [''];
+  }
+
+  return signals.map((point, index) => {
+    const previousTimestamp = index > 0 ? signals[index - 1].timestamp : null;
+
+    const currentDate = new Date(point.timestamp);
+    const previousDate = previousTimestamp
+      ? new Date(previousTimestamp)
+      : null;
+
+    const dayChanged =
+      !previousDate ||
+      currentDate.getFullYear() !== previousDate.getFullYear() ||
+      currentDate.getMonth() !== previousDate.getMonth() ||
+      currentDate.getDate() !== previousDate.getDate();
+
+    const shouldShowLabel =
+      index === 0 ||
+      index === signals.length - 1 ||
+      dayChanged ||
+      index % CHART_LABEL_EVERY === 0;
+
+    if (!shouldShowLabel) {
+      return '';
+    }
+
+    return formatChartLabel(point.timestamp, previousTimestamp, dayChanged);
+  });
+};
+
 const buildYAxisLabels = (values: number[], segments: number) => {
   const maxValue = Math.max(...values, 0.1);
 
@@ -135,10 +193,149 @@ const buildYAxisLabels = (values: number[], segments: number) => {
   });
 };
 
-const formatTimestamp = (timestamp: string) => {
-  const date = new Date(timestamp);
-  return date.toLocaleString();
+const sortSignalsAscending = (points: SignalPoint[]) =>
+  points
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+const mergeSignals = (
+  existingSignals: SignalPoint[],
+  incomingSignals: SignalPoint[]
+) => {
+  const mergedMap = new Map<string, SignalPoint>();
+
+  existingSignals.forEach((point) => {
+    mergedMap.set(point.timestamp, point);
+  });
+
+  incomingSignals.forEach((point) => {
+    mergedMap.set(point.timestamp, point);
+  });
+
+  return sortSignalsAscending(Array.from(mergedMap.values())).slice(
+    -DASHBOARD_SIGNAL_LIMIT
+  );
 };
+
+function SignalChartCard({
+  title,
+  signals,
+  helperText,
+}: {
+  title: string;
+  signals: SignalPoint[];
+  helperText?: string;
+}) {
+  const dynamicChartWidth = Math.max(
+    CHART_WIDTH,
+    signals.length * CHART_POINT_SPACING
+  );
+
+  const chartLabels = buildChartLabels(signals);
+  const chartValues = signals.length > 0 ? signals.map((point) => point.value) : [0];
+  const yAxisLabels = buildYAxisLabels(chartValues, CHART_SEGMENTS);
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>{title}</Text>
+      {helperText ? <Text style={styles.helperText}>{helperText}</Text> : null}
+
+      <View style={styles.chartRow}>
+        <View style={styles.yAxisColumn}>
+          {yAxisLabels.map((label, index) => (
+            <Text key={`${label}-${index}`} style={styles.yAxisLabelText}>
+              {label}
+            </Text>
+          ))}
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator
+          contentContainerStyle={styles.chartScrollContent}
+        >
+          <LineChart
+            data={{
+              labels: chartLabels,
+              datasets: [
+                {
+                  data: chartValues,
+                },
+              ],
+            }}
+            width={dynamicChartWidth}
+            height={CHART_HEIGHT}
+            withHorizontalLabels={false}
+            segments={CHART_SEGMENTS}
+            fromZero
+            yAxisLabel=""
+            yAxisSuffix=""
+            chartConfig={{
+              backgroundColor: '#ffffff',
+              backgroundGradientFrom: '#ffffff',
+              backgroundGradientTo: '#ffffff',
+              decimalPlaces: 2,
+              color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
+              labelColor: (opacity = 1) => `rgba(17, 24, 39, ${opacity})`,
+              propsForDots: {
+                r: '3',
+                strokeWidth: '1',
+                stroke: '#2563eb',
+              },
+            }}
+            style={styles.chart}
+          />
+        </ScrollView>
+      </View>
+    </View>
+  );
+}
+
+function PumpStatusCard({
+  isCurrentlyOn,
+  latestRunTimeText,
+  latestPoint,
+}: {
+  isCurrentlyOn: boolean;
+  latestRunTimeText: string;
+  latestPoint: AnnotatedSignalPoint | null;
+}) {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Pump Status</Text>
+
+      <View style={styles.statusRow}>
+        <View
+          style={[
+            styles.statusBadge,
+            isCurrentlyOn ? styles.statusBadgeOn : styles.statusBadgeOff,
+          ]}
+        >
+          <Text style={styles.statusBadgeText}>
+            {isCurrentlyOn ? 'ON' : 'OFF'}
+          </Text>
+        </View>
+
+        <Text style={styles.statusText}>
+          Threshold: {ON_THRESHOLD_AMPS.toFixed(1)} A
+        </Text>
+      </View>
+
+      <Text style={styles.statusDetail}>
+        {isCurrentlyOn
+          ? `Pump has been ON for ${latestRunTimeText}`
+          : `Pump is currently OFF${
+              latestPoint?.completedRunDurationSeconds !== null
+                ? ` • Last run time: ${latestRunTimeText}`
+                : ''
+            }`}
+      </Text>
+    </View>
+  );
+}
 
 function DevicePanel({
   device,
@@ -166,138 +363,22 @@ function DevicePanel({
         : '0:00'
     : '0:00';
 
-  const dynamicChartWidth = Math.max(
-    CHART_WIDTH,
-    signals.length * CHART_POINT_SPACING
-  );
-
-  const chartLabels =
-    signals.length > 0
-      ? signals.map((point, index) => {
-          const previousTimestamp =
-            index > 0 ? signals[index - 1].timestamp : null;
-
-          const currentDate = new Date(point.timestamp);
-          const previousDate = previousTimestamp
-            ? new Date(previousTimestamp)
-            : null;
-
-          const dayChanged =
-            !previousDate ||
-            currentDate.getFullYear() !== previousDate.getFullYear() ||
-            currentDate.getMonth() !== previousDate.getMonth() ||
-            currentDate.getDate() !== previousDate.getDate();
-
-          const shouldShowLabel =
-            index === 0 ||
-            index === signals.length - 1 ||
-            dayChanged ||
-            index % CHART_LABEL_EVERY === 0;
-
-          if (!shouldShowLabel) {
-            return '';
-          }
-
-          return formatChartLabel(
-            point.timestamp,
-            previousTimestamp,
-            dayChanged
-          );
-        })
-      : [''];
-
-  const chartValues =
-    signals.length > 0 ? signals.map((point) => point.value) : [0];
-
-  const yAxisLabels = buildYAxisLabels(chartValues, CHART_SEGMENTS);
-
   return (
     <View style={styles.deviceSection}>
       <Text style={styles.deviceHeader}>{device.label}</Text>
       <Text style={styles.deviceSubheader}>{device.deviceId}</Text>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Current vs Time</Text>
+      <SignalChartCard
+        title="Current vs Time"
+        signals={signals}
+        helperText={`Dashboard view • last ${DASHBOARD_SIGNAL_LIMIT} seconds max`}
+      />
 
-        <View style={styles.chartRow}>
-          <View style={styles.yAxisColumn}>
-            {yAxisLabels.map((label, index) => (
-              <Text key={`${label}-${index}`} style={styles.yAxisLabelText}>
-                {label}
-              </Text>
-            ))}
-          </View>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator
-            contentContainerStyle={styles.chartScrollContent}
-          >
-            <LineChart
-              data={{
-                labels: chartLabels,
-                datasets: [
-                  {
-                    data: chartValues,
-                  },
-                ],
-              }}
-              width={dynamicChartWidth}
-              height={CHART_HEIGHT}
-              withHorizontalLabels={false}
-              segments={CHART_SEGMENTS}
-              fromZero
-              yAxisLabel=""
-              yAxisSuffix=""
-              chartConfig={{
-                backgroundColor: '#ffffff',
-                backgroundGradientFrom: '#ffffff',
-                backgroundGradientTo: '#ffffff',
-                decimalPlaces: 2,
-                color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
-                labelColor: (opacity = 1) => `rgba(17, 24, 39, ${opacity})`,
-                propsForDots: {
-                  r: '3',
-                  strokeWidth: '1',
-                  stroke: '#2563eb',
-                },
-              }}
-              style={styles.chart}
-            />
-          </ScrollView>
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Pump Status</Text>
-
-        <View style={styles.statusRow}>
-          <View
-            style={[
-              styles.statusBadge,
-              isCurrentlyOn ? styles.statusBadgeOn : styles.statusBadgeOff,
-            ]}
-          >
-            <Text style={styles.statusBadgeText}>
-              {isCurrentlyOn ? 'ON' : 'OFF'}
-            </Text>
-          </View>
-
-          <Text style={styles.statusText}>
-            Threshold: {ON_THRESHOLD_AMPS.toFixed(1)} A
-          </Text>
-        </View>
-
-        <Text style={styles.statusDetail}>
-          {isCurrentlyOn
-            ? `Pump has been ON for ${latestRunTimeText}`
-            : `Pump is currently OFF${
-                latestPoint?.completedRunDurationSeconds !== null
-                  ? ` • Last run time: ${latestRunTimeText}`
-                  : ''
-              }`}
-        </Text>
-      </View>
+      <PumpStatusCard
+        isCurrentlyOn={isCurrentlyOn}
+        latestRunTimeText={latestRunTimeText}
+        latestPoint={latestPoint}
+      />
 
       <Pressable
         style={({ pressed }) => [
@@ -309,7 +390,7 @@ function DevicePanel({
       >
         <View style={styles.latestReadingHeaderRow}>
           <Text style={styles.cardTitle}>Latest Reading</Text>
-          <Text style={styles.openDetailsText}>View recent readings →</Text>
+          <Text style={styles.openDetailsText}>Open full history →</Text>
         </View>
 
         <Text style={styles.label}>Device ID</Text>
@@ -336,14 +417,108 @@ function DevicePanel({
 
 function RecentReadingsScreen({
   device,
-  signals,
   onBack,
 }: {
   device: DeviceConfig;
-  signals: SignalPoint[];
   onBack: () => void;
 }) {
-  const annotatedSignals = annotateSignals(signals, ON_THRESHOLD_AMPS);
+  const [summarySignals, setSummarySignals] = useState<SignalPoint[]>([]);
+  const [historyReadings, setHistoryReadings] = useState<SignalPoint[]>([]);
+  const [totalPoints, setTotalPoints] = useState(0);
+  const [nextBefore, setNextBefore] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [error, setError] = useState('');
+
+  const annotatedHistoryReadings = useMemo(() => {
+    const chronologicalReadings = historyReadings.slice().reverse();
+    return annotateSignals(chronologicalReadings, ON_THRESHOLD_AMPS).reverse();
+  }, [historyReadings]);
+
+  const loadFirstPage = async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const summaryParams = new URLSearchParams({
+        deviceId: device.deviceId,
+        bucketCount: String(HISTORY_BUCKET_COUNT),
+      });
+
+      const pageParams = new URLSearchParams({
+        deviceId: device.deviceId,
+        pageSize: String(HISTORY_PAGE_SIZE),
+      });
+
+      const [summaryResponse, pageResponse] = await Promise.all([
+        fetch(`${API_BASE}/signals/summary?${summaryParams.toString()}`),
+        fetch(`${API_BASE}/signals/page?${pageParams.toString()}`),
+      ]);
+
+      if (!summaryResponse.ok) {
+        throw new Error(
+          `Summary request failed with status ${summaryResponse.status}`
+        );
+      }
+
+      if (!pageResponse.ok) {
+        throw new Error(`Page request failed with status ${pageResponse.status}`);
+      }
+
+      const summaryData =
+        (await summaryResponse.json()) as SignalSummaryResponse;
+      const pageData = (await pageResponse.json()) as SignalPageResponse;
+
+      setSummarySignals(sortSignalsAscending(summaryData.points ?? []));
+      setHistoryReadings(pageData.readings ?? []);
+      setTotalPoints(summaryData.totalPoints ?? 0);
+      setNextBefore(pageData.nextBefore ?? null);
+      setHasMore(Boolean(pageData.hasMore));
+    } catch (err) {
+      console.error(err);
+      setError('Could not load full history for this device.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadOlder = async () => {
+    if (!nextBefore || loadingOlder) {
+      return;
+    }
+
+    setLoadingOlder(true);
+
+    try {
+      const params = new URLSearchParams({
+        deviceId: device.deviceId,
+        pageSize: String(HISTORY_PAGE_SIZE),
+        before: nextBefore,
+      });
+
+      const response = await fetch(`${API_BASE}/signals/page?${params.toString()}`);
+
+      if (!response.ok) {
+        throw new Error(`Page request failed with status ${response.status}`);
+      }
+
+      const pageData = (await response.json()) as SignalPageResponse;
+
+      setHistoryReadings((previous) => [...previous, ...(pageData.readings ?? [])]);
+      setNextBefore(pageData.nextBefore ?? null);
+      setHasMore(Boolean(pageData.hasMore));
+    } catch (err) {
+      console.error(err);
+      setError('Could not load older readings.');
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFirstPage();
+  }, [device.deviceId]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -352,48 +527,83 @@ function RecentReadingsScreen({
           <Text style={styles.backButtonText}>← Back</Text>
         </Pressable>
 
-        <Text style={styles.title}>{device.label} Recent Readings</Text>
+        <Text style={styles.title}>{device.label} Full History</Text>
         <Text style={styles.detailSubheader}>{device.deviceId}</Text>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Recent Readings</Text>
+        {loading ? (
+          <ActivityIndicator size="large" />
+        ) : error ? (
+          <Text style={styles.error}>{error}</Text>
+        ) : (
+          <>
+            <SignalChartCard
+              title="Full Deploy History"
+              signals={summarySignals}
+              helperText={`${totalPoints.toLocaleString()} raw points • chart bucketed to ${summarySignals.length.toLocaleString()} points`}
+            />
 
-          {annotatedSignals.length === 0 ? (
-            <Text style={styles.emptyText}>No readings available.</Text>
-          ) : (
-            annotatedSignals
-              .slice()
-              .reverse()
-              .map((point, index) => (
-                <View
-                  key={`${device.deviceId}-${point.timestamp}-${index}`}
-                  style={[
-                    styles.readingRow,
-                    index !== annotatedSignals.length - 1 &&
-                      styles.readingRowBorder,
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Recent Readings</Text>
+              <Text style={styles.helperText}>
+                Loaded {historyReadings.length.toLocaleString()} of{' '}
+                {totalPoints.toLocaleString()} readings
+              </Text>
+
+              {annotatedHistoryReadings.length === 0 ? (
+                <Text style={styles.emptyText}>No readings available.</Text>
+              ) : (
+                annotatedHistoryReadings.map((point, index) => (
+                  <View
+                    key={`${device.deviceId}-${point.timestamp}-${index}`}
+                    style={[
+                      styles.readingRow,
+                      index !== annotatedHistoryReadings.length - 1 &&
+                        styles.readingRowBorder,
+                    ]}
+                  >
+                    <Text style={styles.readingTimestamp}>
+                      {formatTimestamp(point.timestamp)}
+                    </Text>
+                    <Text style={styles.readingText}>
+                      Current: {point.value.toFixed(3)} A
+                    </Text>
+                    <Text style={styles.readingText}>
+                      Status: {point.isOn ? 'ON' : 'OFF'}
+                    </Text>
+                    <Text style={styles.readingText}>
+                      On Time:{' '}
+                      {point.isOn
+                        ? formatDuration(point.onTimeSeconds)
+                        : point.completedRunDurationSeconds !== null
+                          ? `${formatDuration(
+                              point.completedRunDurationSeconds
+                            )} (completed run)`
+                          : '0:00'}
+                    </Text>
+                  </View>
+                ))
+              )}
+
+              {hasMore ? (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.loadOlderButton,
+                    pressed && styles.latestReadingCardPressed,
                   ]}
+                  onPress={loadOlder}
                 >
-                  <Text style={styles.readingTimestamp}>
-                    {formatTimestamp(point.timestamp)}
-                  </Text>
-                  <Text style={styles.readingText}>
-                    Current: {point.value.toFixed(3)} A
-                  </Text>
-                  <Text style={styles.readingText}>
-                    Status: {point.isOn ? 'ON' : 'OFF'}
-                  </Text>
-                  <Text style={styles.readingText}>
-                    On Time:{' '}
-                    {point.isOn
-                      ? formatDuration(point.onTimeSeconds)
-                      : point.completedRunDurationSeconds !== null
-                        ? `${formatDuration(point.completedRunDurationSeconds)} (completed run)`
-                        : '0:00'}
-                  </Text>
-                </View>
-              ))
-          )}
-        </View>
+                  {loadingOlder ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <Text style={styles.loadOlderButtonText}>Load older readings</Text>
+                  )}
+                </Pressable>
+              ) : (
+                <Text style={styles.endOfListText}>All readings loaded.</Text>
+              )}
+            </View>
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -405,6 +615,10 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+
+  const devicesRef = useRef<DeviceConfig[]>(FALLBACK_DEVICES);
+  const lastTimestampMapRef = useRef<Record<string, string | null>>({});
+  const initializedRef = useRef(false);
 
   const selectedDevice = useMemo(
     () => devices.find((device) => device.deviceId === selectedDeviceId) ?? null,
@@ -422,22 +636,86 @@ export default function HomeScreen() {
       const data = await response.json();
 
       if (Array.isArray(data) && data.length > 0) {
-        setDevices(data);
+        return data as DeviceConfig[];
       }
     } catch (err) {
       console.error('Could not load device list, using fallback list.', err);
     }
+
+    return FALLBACK_DEVICES;
   };
 
-  const fetchSignals = async (deviceList: DeviceConfig[]) => {
-    try {
-      setError('');
+  const fetchRecentSignalsForDevices = async (deviceList: DeviceConfig[]) => {
+    const responses = await Promise.all(
+      deviceList.map(async (device) => {
+        const params = new URLSearchParams({
+          deviceId: device.deviceId,
+          limit: String(DASHBOARD_SIGNAL_LIMIT),
+        });
 
+        const response = await fetch(`${API_BASE}/signals?${params.toString()}`);
+
+        if (!response.ok) {
+          throw new Error(
+            `Signals request failed for ${device.deviceId} with status ${response.status}`
+          );
+        }
+
+        const data = await response.json();
+
+        if (!Array.isArray(data)) {
+          throw new Error(`Backend did not return an array for ${device.deviceId}.`);
+        }
+
+        return {
+          deviceId: device.deviceId,
+          signals: sortSignalsAscending(data as SignalPoint[]),
+        };
+      })
+    );
+
+    const nextSignalMap: Record<string, SignalPoint[]> = {};
+    const nextLastTimestampMap: Record<string, string | null> = {};
+
+    responses.forEach(({ deviceId, signals }) => {
+      nextSignalMap[deviceId] = signals;
+      nextLastTimestampMap[deviceId] =
+        signals.length > 0 ? signals[signals.length - 1].timestamp : null;
+    });
+
+    return {
+      nextSignalMap,
+      nextLastTimestampMap,
+    };
+  };
+
+  const pollDashboardSignals = async () => {
+    if (!initializedRef.current) {
+      return;
+    }
+
+    const deviceList = devicesRef.current;
+
+    if (deviceList.length === 0) {
+      return;
+    }
+
+    try {
       const responses = await Promise.all(
         deviceList.map(async (device) => {
-          const response = await fetch(
-            `${API_BASE}/signals?deviceId=${device.deviceId}`
-          );
+          const params = new URLSearchParams({
+            deviceId: device.deviceId,
+          });
+
+          const since = lastTimestampMapRef.current[device.deviceId];
+
+          if (since) {
+            params.set('since', since);
+          } else {
+            params.set('limit', String(DASHBOARD_SIGNAL_LIMIT));
+          }
+
+          const response = await fetch(`${API_BASE}/signals?${params.toString()}`);
 
           if (!response.ok) {
             throw new Error(
@@ -448,66 +726,96 @@ export default function HomeScreen() {
           const data = await response.json();
 
           if (!Array.isArray(data)) {
-            throw new Error(
-              `Backend did not return an array for ${device.deviceId}.`
-            );
+            throw new Error(`Backend did not return an array for ${device.deviceId}.`);
           }
-
-          const sortedData = data
-            .slice()
-            .sort(
-              (a: SignalPoint, b: SignalPoint) =>
-                new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-            );
 
           return {
             deviceId: device.deviceId,
-            signals: sortedData,
+            signals: sortSignalsAscending(data as SignalPoint[]),
           };
         })
       );
 
-      const nextSignalMap: Record<string, SignalPoint[]> = {};
-      responses.forEach(({ deviceId, signals }) => {
-        nextSignalMap[deviceId] = signals;
-      });
+      setSignalMap((previous) => {
+        const nextSignalMap = { ...previous };
+        const nextLastTimestampMap = { ...lastTimestampMapRef.current };
 
-      setSignalMap(nextSignalMap);
+        responses.forEach(({ deviceId, signals }) => {
+          nextSignalMap[deviceId] = mergeSignals(
+            previous[deviceId] ?? [],
+            signals
+          );
+
+          const latestPoint =
+            nextSignalMap[deviceId][nextSignalMap[deviceId].length - 1] ?? null;
+
+          nextLastTimestampMap[deviceId] = latestPoint?.timestamp ?? null;
+        });
+
+        lastTimestampMapRef.current = nextLastTimestampMap;
+        return nextSignalMap;
+      });
     } catch (err) {
-      setError('Could not load signal data from backend.');
-      console.error(err);
-    } finally {
-      setLoading(false);
+      console.error('Dashboard poll failed.', err);
     }
   };
 
   useEffect(() => {
+    let isCancelled = false;
+
     const initialize = async () => {
-      await fetchDevices();
+      setLoading(true);
+      setError('');
+
+      try {
+        const deviceList = await fetchDevices();
+
+        if (isCancelled) {
+          return;
+        }
+
+        setDevices(deviceList);
+        devicesRef.current = deviceList;
+
+        const { nextSignalMap, nextLastTimestampMap } =
+          await fetchRecentSignalsForDevices(deviceList);
+
+        if (isCancelled) {
+          return;
+        }
+
+        setSignalMap(nextSignalMap);
+        lastTimestampMapRef.current = nextLastTimestampMap;
+      } catch (err) {
+        console.error(err);
+
+        if (!isCancelled) {
+          setError('Could not load signal data from backend.');
+        }
+      } finally {
+        if (!isCancelled) {
+          initializedRef.current = true;
+          setLoading(false);
+        }
+      }
     };
 
     initialize();
-  }, []);
-
-  useEffect(() => {
-    if (devices.length === 0) {
-      return;
-    }
-
-    fetchSignals(devices);
 
     const interval = setInterval(() => {
-      fetchSignals(devices);
+      pollDashboardSignals();
     }, REFRESH_MS);
 
-    return () => clearInterval(interval);
-  }, [devices]);
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   if (selectedDevice && !loading && !error) {
     return (
       <RecentReadingsScreen
         device={selectedDevice}
-        signals={signalMap[selectedDevice.deviceId] ?? []}
         onBack={() => setSelectedDeviceId(null)}
       />
     );
@@ -586,6 +894,12 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
+  },
+  helperText: {
+    fontSize: 13,
+    color: '#6b7280',
+    marginTop: -4,
+    marginBottom: 10,
   },
   latestReadingCard: {
     borderWidth: 1,
@@ -725,5 +1039,24 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#111827',
+  },
+  loadOlderButton: {
+    alignSelf: 'center',
+    marginTop: 16,
+    backgroundColor: '#eff6ff',
+    borderRadius: 999,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  loadOlderButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1d4ed8',
+  },
+  endOfListText: {
+    marginTop: 16,
+    textAlign: 'center',
+    color: '#6b7280',
+    fontSize: 14,
   },
 });
