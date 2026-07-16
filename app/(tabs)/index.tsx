@@ -737,7 +737,6 @@ function PressureChartCard({
 
       <Text style={styles.xAxisTitle}>
         X-axis: Time
-        reading of a new day
       </Text>
     </View>
   );
