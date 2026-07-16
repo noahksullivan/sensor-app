@@ -742,70 +742,6 @@ function PressureChartCard({
   );
 }
 
-function PumpStatusCard({
-  dashboardData,
-}: {
-  dashboardData: DashboardDeviceData;
-}) {
-  if (
-    !dashboardData.latestSignal ||
-    !dashboardData.currentState
-  ) {
-    return (
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>
-          Pump Status
-        </Text>
-
-        <Text style={styles.emptyText}>
-          No readings available yet.
-        </Text>
-      </View>
-    );
-  }
-
-  const isCurrentlyOn =
-    dashboardData.currentState === 'ON';
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>
-        Pump Status
-      </Text>
-
-      <View style={styles.statusRow}>
-        <View
-          style={[
-            styles.statusBadge,
-            isCurrentlyOn
-              ? styles.statusBadgeOn
-              : styles.statusBadgeOff,
-          ]}
-        >
-          <Text style={styles.statusBadgeText}>
-            {isCurrentlyOn ? 'ON' : 'OFF'}
-          </Text>
-        </View>
-
-        <Text style={styles.statusText}>
-          Threshold:{' '}
-          {dashboardData.thresholdAmps.toFixed(1)} A
-        </Text>
-      </View>
-
-      <Text style={styles.statusDetail}>
-        {isCurrentlyOn
-          ? `Pump has been ON for ${formatDuration(
-              dashboardData.currentStateDurationSeconds
-            )}`
-          : `Pump has been OFF for ${formatDuration(
-              dashboardData.currentStateDurationSeconds
-            )}`}
-      </Text>
-    </View>
-  );
-}
-
 function StateLogCard({
   dashboardData,
 }: {
@@ -1059,10 +995,6 @@ function DevicePanel({
       </Text>
 
       <StateLogCard
-        dashboardData={dashboardData}
-      />
-
-      <PumpStatusCard
         dashboardData={dashboardData}
       />
 
@@ -2870,45 +2802,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#374151',
     marginTop: 2,
-  },
-
-  statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
-  },
-
-  statusBadge: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-  },
-
-  statusBadgeOn: {
-    backgroundColor: '#16a34a',
-  },
-
-  statusBadgeOff: {
-    backgroundColor: '#dc2626',
-  },
-
-  statusBadgeText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-
-  statusText: {
-    fontSize: 15,
-    color: '#374151',
-    fontWeight: '600',
-  },
-
-  statusDetail: {
-    fontSize: 15,
-    color: '#111827',
-    marginTop: 4,
   },
 
   backButton: {
