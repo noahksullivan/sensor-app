@@ -29,6 +29,10 @@ const HISTORY_BUCKET_COUNT = 800;
 const HISTORY_PAGE_SIZE = 200;
 const DASHBOARD_TRANSITION_LIMIT = 20;
 
+// Show only the newest transitions until
+// the user expands the state-change list.
+const STATE_LOG_COLLAPSED_COUNT = 6;
+
 type PressureDashboardDays = 5 | 7;
 
 const PRESSURE_DASHBOARD_DEFAULT_DAYS:
@@ -808,6 +812,29 @@ function StateLogCard({
 }: {
   dashboardData: DashboardDeviceData;
 }) {
+  const [
+    showAllTransitions,
+    setShowAllTransitions,
+  ] = useState(false);
+
+  const visibleTransitions =
+    showAllTransitions
+      ? dashboardData.recentTransitions
+      : dashboardData.recentTransitions.slice(
+          0,
+          STATE_LOG_COLLAPSED_COUNT
+        );
+
+  const hasHiddenTransitions =
+    dashboardData.recentTransitions.length >
+    STATE_LOG_COLLAPSED_COUNT;
+
+  const hiddenTransitionCount = Math.max(
+    0,
+    dashboardData.recentTransitions.length -
+      STATE_LOG_COLLAPSED_COUNT
+  );
+
   const currentState =
     dashboardData.currentState;
 
@@ -911,69 +938,98 @@ function StateLogCard({
           No completed state changes yet.
         </Text>
       ) : (
-        dashboardData.recentTransitions.map(
-          (entry, index) => (
-            <View
-              key={`${entry.state}-${entry.startedAt}-${entry.endedAt}-${index}`}
-              style={[
-                styles.transitionRow,
-
-                index !==
-                  dashboardData.recentTransitions
-                    .length -
-                    1 &&
-                  styles.transitionRowBorder,
-              ]}
-            >
+        <>
+          {visibleTransitions.map(
+            (entry, index) => (
               <View
+                key={`${entry.state}-${entry.startedAt}-${entry.endedAt}-${index}`}
                 style={[
-                  styles.transitionBadge,
+                  styles.transitionRow,
 
-                  entry.state === 'ON'
-                    ? styles.transitionBadgeOn
-                    : styles.transitionBadgeOff,
+                  index !==
+                    visibleTransitions.length -
+                      1 &&
+                    styles.transitionRowBorder,
                 ]}
               >
-                <Text
+                <View
+                  style={[
+                    styles.transitionBadge,
+
+                    entry.state === 'ON'
+                      ? styles.transitionBadgeOn
+                      : styles.transitionBadgeOff,
+                  ]}
+                >
+                  <Text
+                    style={
+                      styles.transitionBadgeText
+                    }
+                  >
+                    {entry.state}
+                  </Text>
+                </View>
+
+                <View
                   style={
-                    styles.transitionBadgeText
+                    styles.transitionContent
                   }
                 >
-                  {entry.state}
-                </Text>
-              </View>
+                  <Text
+                    style={
+                      styles.transitionTimeText
+                    }
+                  >
+                    {formatTimestamp(
+                      entry.startedAt
+                    )}{' '}
+                    →{' '}
+                    {formatTimestamp(
+                      entry.endedAt
+                    )}
+                  </Text>
 
-              <View
+                  <Text
+                    style={
+                      styles.transitionDurationText
+                    }
+                  >
+                    {entry.state} for{' '}
+                    {formatDuration(
+                      entry.durationSeconds
+                    )}
+                  </Text>
+                </View>
+              </View>
+            )
+          )}
+
+          {hasHiddenTransitions ? (
+            <Pressable
+              onPress={() =>
+                setShowAllTransitions(
+                  (current) => !current
+                )
+              }
+              style={({ pressed }) => [
+                styles.transitionViewMoreButton,
+
+                pressed &&
+                  styles.transitionViewMoreButtonPressed,
+              ]}
+            >
+              <Text
                 style={
-                  styles.transitionContent
+                  styles.transitionViewMoreButtonText
                 }
               >
-                <Text
-                  style={
-                    styles.transitionTimeText
-                  }
-                >
-                  {formatTimestamp(
-                    entry.startedAt
-                  )}{' '}
-                  →{' '}
-                  {formatTimestamp(entry.endedAt)}
-                </Text>
-
-                <Text
-                  style={
-                    styles.transitionDurationText
-                  }
-                >
-                  {entry.state} for{' '}
-                  {formatDuration(
-                    entry.durationSeconds
-                  )}
-                </Text>
-              </View>
-            </View>
-          )
-        )
+                {showAllTransitions
+                  ? 'View Less'
+                  : `View More (${hiddenTransitionCount})`}
+              </Text>
+            </Pressable>
+          ) : null}
+        </>
       )}
     </View>
   );
@@ -2775,6 +2831,27 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#374151',
     marginTop: 4,
+  },
+
+  transitionViewMoreButton: {
+    alignSelf: 'center',
+    marginTop: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+  },
+
+  transitionViewMoreButtonPressed: {
+    opacity: 0.8,
+  },
+
+  transitionViewMoreButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1d4ed8',
   },
 
   readingRow: {
