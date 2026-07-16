@@ -1,4 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -24,12 +29,31 @@ const HISTORY_BUCKET_COUNT = 800;
 const HISTORY_PAGE_SIZE = 200;
 const DASHBOARD_TRANSITION_LIMIT = 20;
 
-const PRESSURE_DASHBOARD_LIMIT = 600;
+// The front pressure graph shows a rolling seven days.
+const PRESSURE_DASHBOARD_DAYS = 7;
+
+// Supabase returns the highest pressure point from
+// every 15-minute interval.
+const PRESSURE_DASHBOARD_BUCKET_MINUTES = 15;
+
+// The seven-day graph is expensive to regenerate.
+// Current-sensor status can still refresh every two seconds.
+const PRESSURE_DASHBOARD_REFRESH_MS = 60_000;
+
 const PRESSURE_RECENT_LIMIT = 200;
 const PRESSURE_HISTORY_BUCKET_COUNT = 800;
 
+// Default spacing used by the full-history graph.
 const PRESSURE_CHART_POINT_SPACING = 18;
 const PRESSURE_CHART_LABEL_EVERY = 30;
+
+// Front-dashboard-specific chart dimensions.
+// 672 points × 12 pixels produces an approximately
+// 8,000-pixel horizontally scrollable weekly graph.
+const PRESSURE_DASHBOARD_POINT_SPACING = 12;
+
+// With 15-minute buckets, 24 points is six hours.
+const PRESSURE_DASHBOARD_LABEL_EVERY = 24;
 
 type SignalPoint = {
   deviceId: string;
@@ -62,6 +86,20 @@ type PressurePoint = {
 type PressureDashboardData = {
   readings: PressurePoint[];
   latestReading: PressurePoint | null;
+  days: number;
+  bucketMinutes: number;
+  rangeStartedAt: string | null;
+  rangeEndedAt: string | null;
+};
+
+type PressureDashboardResponse = {
+  deviceId: string;
+  readings: PressurePoint[];
+  latestReading: PressurePoint | null;
+  days: number;
+  bucketMinutes: number;
+  rangeStartedAt: string;
+  rangeEndedAt: string;
 };
 
 type PressureSummaryResponse = {
@@ -154,6 +192,11 @@ const createEmptyPressureDashboardData =
   (): PressureDashboardData => ({
     readings: [],
     latestReading: null,
+    days: PRESSURE_DASHBOARD_DAYS,
+    bucketMinutes:
+      PRESSURE_DASHBOARD_BUCKET_MINUTES,
+    rangeStartedAt: null,
+    rangeEndedAt: null,
   });
 
 const formatDuration = (totalSeconds: number) => {
@@ -369,11 +412,17 @@ const didLocalDayChange = (
 };
 
 const buildPressureChartLabels = (
-  readings: PressurePoint[]
+  readings: PressurePoint[],
+  labelEvery = PRESSURE_CHART_LABEL_EVERY
 ) => {
   if (readings.length === 0) {
     return [''];
   }
+
+  const safeLabelEvery = Math.max(
+    1,
+    labelEvery
+  );
 
   return readings.map((reading, index) => {
     const previousTimestamp =
@@ -386,7 +435,9 @@ const buildPressureChartLabels = (
       previousTimestamp
     );
 
-    const date = new Date(reading.timestamp);
+    const date = new Date(
+      reading.timestamp
+    );
 
     /*
       A vertical bar plus the date marks the first
@@ -401,7 +452,7 @@ const buildPressureChartLabels = (
 
     const shouldShowTime =
       index === readings.length - 1 ||
-      index % PRESSURE_CHART_LABEL_EVERY === 0;
+      index % safeLabelEvery === 0;
 
     if (!shouldShowTime) {
       return '';
@@ -518,11 +569,25 @@ function PressureChartCard({
   title,
   readings,
   helperText,
+  pointSpacing =
+    PRESSURE_CHART_POINT_SPACING,
+  labelEvery =
+    PRESSURE_CHART_LABEL_EVERY,
+  startAtLatest = false,
 }: {
   title: string;
   readings: PressurePoint[];
   helperText?: string;
+  pointSpacing?: number;
+  labelEvery?: number;
+  startAtLatest?: boolean;
 }) {
+  const horizontalScrollRef =
+    useRef<ScrollView>(null);
+
+  const hasInitiallyScrolledRef =
+    useRef(false);
+
   if (readings.length === 0) {
     return (
       <View style={styles.card}>
@@ -547,7 +612,10 @@ function PressureChartCard({
     sortPressureAscending(readings);
 
   const chartLabels =
-    buildPressureChartLabels(sortedReadings);
+    buildPressureChartLabels(
+      sortedReadings,
+      labelEvery
+    );
 
   const chartValues = sortedReadings.map(
     (reading) => reading.value
@@ -556,8 +624,23 @@ function PressureChartCard({
   const dynamicChartWidth = Math.max(
     CHART_WIDTH,
     sortedReadings.length *
-      PRESSURE_CHART_POINT_SPACING
+      pointSpacing
   );
+
+  const scrollToLatestOnce = () => {
+    if (
+      !startAtLatest ||
+      hasInitiallyScrolledRef.current
+    ) {
+      return;
+    }
+
+    hasInitiallyScrolledRef.current = true;
+
+    horizontalScrollRef.current?.scrollToEnd({
+      animated: false,
+    });
+  };
 
   return (
     <View style={styles.card}>
@@ -576,10 +659,14 @@ function PressureChartCard({
       </Text>
 
       <ScrollView
+        ref={horizontalScrollRef}
         horizontal
         showsHorizontalScrollIndicator
         contentContainerStyle={
           styles.chartScrollContent
+        }
+        onContentSizeChange={
+          scrollToLatestOnce
         }
       >
         <LineChart
@@ -608,8 +695,10 @@ function PressureChartCard({
           }
           chartConfig={{
             backgroundColor: '#ffffff',
-            backgroundGradientFrom: '#ffffff',
-            backgroundGradientTo: '#ffffff',
+            backgroundGradientFrom:
+              '#ffffff',
+            backgroundGradientTo:
+              '#ffffff',
             decimalPlaces: 2,
 
             color: (opacity = 1) =>
@@ -1006,9 +1095,21 @@ function PressureDevicePanel({
       </Text>
 
       <PressureChartCard
-        title="Pressure History"
+        title="Rolling 7-Day Pressure History"
         readings={pressureData.readings}
-        helperText="Each point is the highest pressure measured during one 10-second, 100-sample window."
+        helperText={
+          `Rolling last ${pressureData.days} days • ` +
+          `each graph point is the highest pressure ` +
+          `recorded within a ${pressureData.bucketMinutes}-minute interval • ` +
+          `scroll horizontally to move between days`
+        }
+        pointSpacing={
+          PRESSURE_DASHBOARD_POINT_SPACING
+        }
+        labelEvery={
+          PRESSURE_DASHBOARD_LABEL_EVERY
+        }
+        startAtLatest
       />
 
       <Pressable
@@ -1891,25 +1992,32 @@ export default function HomeScreen() {
                   deviceId:
                     device.deviceId,
 
-                  limit: String(
-                    PRESSURE_DASHBOARD_LIMIT
+                  days: String(
+                    PRESSURE_DASHBOARD_DAYS
+                  ),
+
+                  bucketMinutes: String(
+                    PRESSURE_DASHBOARD_BUCKET_MINUTES
                   ),
                 });
 
               const response = await fetch(
-                `${API_BASE}/pressure?${params.toString()}`
+                `${API_BASE}/pressure/dashboard?${params.toString()}`
               );
 
               if (!response.ok) {
                 throw new Error(
-                  `Pressure request failed for ${device.deviceId} with status ${response.status}`
+                  `Pressure dashboard request failed for ${device.deviceId} with status ${response.status}`
                 );
               }
 
+              const data =
+                (await response.json()) as
+                  PressureDashboardResponse;
+
               const readings =
                 sortPressureAscending(
-                  (await response.json()) as
-                    PressurePoint[]
+                  data.readings ?? []
                 );
 
               return {
@@ -1920,9 +2028,23 @@ export default function HomeScreen() {
                   readings,
 
                   latestReading:
-                    readings[
-                      readings.length - 1
-                    ] ?? null,
+                    data.latestReading ?? null,
+
+                  days:
+                    data.days ??
+                    PRESSURE_DASHBOARD_DAYS,
+
+                  bucketMinutes:
+                    data.bucketMinutes ??
+                    PRESSURE_DASHBOARD_BUCKET_MINUTES,
+
+                  rangeStartedAt:
+                    data.rangeStartedAt ??
+                    null,
+
+                  rangeEndedAt:
+                    data.rangeEndedAt ??
+                    null,
                 } satisfies PressureDashboardData,
               };
             }
@@ -1949,6 +2071,14 @@ export default function HomeScreen() {
 
   useEffect(() => {
     let isCancelled = false;
+
+    let currentDashboardInterval:
+      ReturnType<typeof setInterval> | null =
+        null;
+
+    let pressureDashboardInterval:
+      ReturnType<typeof setInterval> | null =
+        null;
 
     const initialize = async () => {
       setLoading(true);
@@ -1988,6 +2118,63 @@ export default function HomeScreen() {
         setPressureMap(
           nextPressureMap
         );
+
+        /*
+          Current sensors remain responsive and update
+          every two seconds.
+        */
+        currentDashboardInterval =
+          setInterval(
+            async () => {
+              try {
+                const updatedDashboardMap =
+                  await fetchDashboardDataForDevices(
+                    deviceList
+                  );
+
+                if (!isCancelled) {
+                  setDashboardMap(
+                    updatedDashboardMap
+                  );
+                }
+              } catch (err) {
+                console.error(
+                  'Current dashboard poll failed.',
+                  err
+                );
+              }
+            },
+            REFRESH_MS
+          );
+
+        /*
+          The rolling weekly pressure graph refreshes
+          once per minute. The newest raw reading card
+          is refreshed at the same time.
+        */
+        pressureDashboardInterval =
+          setInterval(
+            async () => {
+              try {
+                const updatedPressureMap =
+                  await fetchPressureDataForDevices(
+                    deviceList
+                  );
+
+                if (!isCancelled) {
+                  setPressureMap(
+                    updatedPressureMap
+                  );
+                }
+              } catch (err) {
+                console.error(
+                  'Pressure dashboard poll failed.',
+                  err
+                );
+              }
+            },
+            PRESSURE_DASHBOARD_REFRESH_MS
+          );
       } catch (err) {
         console.error(err);
 
@@ -2005,46 +2192,22 @@ export default function HomeScreen() {
 
     initialize();
 
-    const interval = setInterval(
-      async () => {
-        try {
-          const [
-            nextDashboardMap,
-            nextPressureMap,
-          ] = await Promise.all([
-            fetchDashboardDataForDevices(
-              devices
-            ),
-
-            fetchPressureDataForDevices(
-              devices
-            ),
-          ]);
-
-          if (!isCancelled) {
-            setDashboardMap(
-              nextDashboardMap
-            );
-
-            setPressureMap(
-              nextPressureMap
-            );
-          }
-        } catch (err) {
-          console.error(
-            'Dashboard poll failed.',
-            err
-          );
-        }
-      },
-      REFRESH_MS
-    );
-
     return () => {
       isCancelled = true;
-      clearInterval(interval);
+
+      if (currentDashboardInterval) {
+        clearInterval(
+          currentDashboardInterval
+        );
+      }
+
+      if (pressureDashboardInterval) {
+        clearInterval(
+          pressureDashboardInterval
+        );
+      }
     };
-  }, [devices.length]);
+  }, []);
 
   if (
     selectedDevice &&
