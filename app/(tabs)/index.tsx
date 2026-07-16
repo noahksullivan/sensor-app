@@ -736,7 +736,7 @@ function PressureChartCard({
       </ScrollView>
 
       <Text style={styles.xAxisTitle}>
-        X-axis: Time • │ date marks the first
+        X-axis: Time
         reading of a new day
       </Text>
     </View>
@@ -1233,10 +1233,7 @@ function PressureDevicePanel({
         }
         readings={pressureData.readings}
         helperText={
-          `Rolling last ${pressureData.days} days • ` +
-          `each graph point is the highest pressure ` +
-          `recorded within a ${pressureData.bucketMinutes}-minute interval • ` +
-          `scroll horizontally to move between days`
+          `•`
         }
         pointSpacing={
           PRESSURE_DASHBOARD_POINT_SPACING
