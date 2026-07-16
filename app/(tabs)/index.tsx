@@ -29,8 +29,16 @@ const HISTORY_BUCKET_COUNT = 800;
 const HISTORY_PAGE_SIZE = 200;
 const DASHBOARD_TRANSITION_LIMIT = 20;
 
-// The front pressure graph shows a rolling seven days.
-const PRESSURE_DASHBOARD_DAYS = 7;
+type PressureDashboardDays = 5 | 7;
+
+const PRESSURE_DASHBOARD_DEFAULT_DAYS:
+  PressureDashboardDays = 7;
+
+const PRESSURE_DASHBOARD_DAY_OPTIONS:
+  PressureDashboardDays[] = [
+    7,
+    5,
+  ];
 
 // Supabase returns the highest pressure point from
 // every 15-minute interval.
@@ -188,16 +196,17 @@ const createEmptyDashboardData = (
   recentTransitions: [],
 });
 
-const createEmptyPressureDashboardData =
-  (): PressureDashboardData => ({
-    readings: [],
-    latestReading: null,
-    days: PRESSURE_DASHBOARD_DAYS,
-    bucketMinutes:
-      PRESSURE_DASHBOARD_BUCKET_MINUTES,
-    rangeStartedAt: null,
-    rangeEndedAt: null,
-  });
+const createEmptyPressureDashboardData = (
+  days: PressureDashboardDays
+): PressureDashboardData => ({
+  readings: [],
+  latestReading: null,
+  days,
+  bucketMinutes:
+    PRESSURE_DASHBOARD_BUCKET_MINUTES,
+  rangeStartedAt: null,
+  rangeEndedAt: null,
+});
 
 const formatDuration = (totalSeconds: number) => {
   const safeSeconds = Math.max(0, totalSeconds);
@@ -1073,10 +1082,18 @@ function DevicePanel({
 function PressureDevicePanel({
   device,
   pressureData,
+  selectedDays,
+  isRangeLoading,
+  onChangeDays,
   onOpenRecentReadings,
 }: {
   device: DeviceConfig;
   pressureData: PressureDashboardData;
+  selectedDays: PressureDashboardDays;
+  isRangeLoading: boolean;
+  onChangeDays: (
+    days: PressureDashboardDays
+  ) => void;
   onOpenRecentReadings: (
     device: DeviceConfig
   ) => void;
@@ -1094,8 +1111,70 @@ function PressureDevicePanel({
         {device.deviceId}
       </Text>
 
+      <View style={styles.pressureRangeControl}>
+        <View style={styles.pressureRangeHeader}>
+          <Text style={styles.pressureRangeLabel}>
+            Graph Window
+          </Text>
+
+          {isRangeLoading ? (
+            <ActivityIndicator size="small" />
+          ) : null}
+        </View>
+
+        <View style={styles.pressureRangeButtons}>
+          {PRESSURE_DASHBOARD_DAY_OPTIONS.map(
+            (days) => {
+              const isActive =
+                selectedDays === days;
+
+              return (
+                <Pressable
+                  key={days}
+                  disabled={
+                    isRangeLoading ||
+                    isActive
+                  }
+                  onPress={() =>
+                    onChangeDays(days)
+                  }
+                  style={({ pressed }) => [
+                    styles.pressureRangeButton,
+
+                    isActive &&
+                      styles.pressureRangeButtonActive,
+
+                    pressed &&
+                      !isActive &&
+                      styles.pressureRangeButtonPressed,
+
+                    isRangeLoading &&
+                      styles.pressureRangeButtonDisabled,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.pressureRangeButtonText,
+
+                      isActive &&
+                        styles.pressureRangeButtonTextActive,
+                    ]}
+                  >
+                    {days} Day
+                  </Text>
+                </Pressable>
+              );
+            }
+          )}
+        </View>
+      </View>
+
       <PressureChartCard
-        title="Rolling 7-Day Pressure History"
+        key={`pressure-${pressureData.days}`}
+        title={
+          `Rolling ${pressureData.days}-Day ` +
+          'Pressure History'
+        }
         readings={pressureData.readings}
         helperText={
           `Rolling last ${pressureData.days} days • ` +
@@ -1836,6 +1915,23 @@ export default function HomeScreen() {
       >
     >({});
 
+  const [
+    pressureDashboardDays,
+    setPressureDashboardDays,
+  ] = useState<PressureDashboardDays>(
+    PRESSURE_DASHBOARD_DEFAULT_DAYS
+  );
+
+  const [
+    pressureDashboardLoading,
+    setPressureDashboardLoading,
+  ] = useState(false);
+
+  const pressureDashboardDaysRef =
+    useRef<PressureDashboardDays>(
+      PRESSURE_DASHBOARD_DEFAULT_DAYS
+    );
+
   const [loading, setLoading] =
     useState(true);
 
@@ -1975,7 +2071,8 @@ export default function HomeScreen() {
 
   const fetchPressureDataForDevices =
     async (
-      deviceList: DeviceConfig[]
+      deviceList: DeviceConfig[],
+      days: PressureDashboardDays
     ) => {
       const pressureDevices =
         deviceList.filter(
@@ -1992,9 +2089,7 @@ export default function HomeScreen() {
                   deviceId:
                     device.deviceId,
 
-                  days: String(
-                    PRESSURE_DASHBOARD_DAYS
-                  ),
+                  days: String(days),
 
                   bucketMinutes: String(
                     PRESSURE_DASHBOARD_BUCKET_MINUTES
@@ -2031,8 +2126,7 @@ export default function HomeScreen() {
                     data.latestReading ?? null,
 
                   days:
-                    data.days ??
-                    PRESSURE_DASHBOARD_DAYS,
+                    data.days ?? days,
 
                   bucketMinutes:
                     data.bucketMinutes ??
@@ -2069,6 +2163,58 @@ export default function HomeScreen() {
       return nextPressureMap;
     };
 
+  const handlePressureDashboardDaysChange =
+    async (
+      days: PressureDashboardDays
+    ) => {
+      if (
+        days === pressureDashboardDays ||
+        pressureDashboardLoading
+      ) {
+        return;
+      }
+
+      const previousDays =
+        pressureDashboardDays;
+
+      pressureDashboardDaysRef.current =
+        days;
+
+      setPressureDashboardDays(days);
+      setPressureDashboardLoading(true);
+
+      try {
+        const nextPressureMap =
+          await fetchPressureDataForDevices(
+            devices,
+            days
+          );
+
+        setPressureMap(
+          nextPressureMap
+        );
+      } catch (err) {
+        console.error(
+          `Could not load the ${days}-day pressure dashboard.`,
+          err
+        );
+
+        /*
+          Retain the previously loaded graph and
+          restore its selected button when the
+          new request fails.
+        */
+        pressureDashboardDaysRef.current =
+          previousDays;
+
+        setPressureDashboardDays(
+          previousDays
+        );
+      } finally {
+        setPressureDashboardLoading(false);
+      }
+    };
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -2103,7 +2249,8 @@ export default function HomeScreen() {
           ),
 
           fetchPressureDataForDevices(
-            deviceList
+            deviceList,
+            pressureDashboardDaysRef.current
           ),
         ]);
 
@@ -2158,7 +2305,8 @@ export default function HomeScreen() {
               try {
                 const updatedPressureMap =
                   await fetchPressureDataForDevices(
-                    deviceList
+                    deviceList,
+                    pressureDashboardDaysRef.current
                   );
 
                 if (!isCancelled) {
@@ -2264,7 +2412,18 @@ export default function HomeScreen() {
                   pressureMap[
                     device.deviceId
                   ] ??
-                  createEmptyPressureDashboardData()
+                  createEmptyPressureDashboardData(
+                    pressureDashboardDays
+                  )
+                }
+                selectedDays={
+                  pressureDashboardDays
+                }
+                isRangeLoading={
+                  pressureDashboardLoading
+                }
+                onChangeDays={
+                  handlePressureDashboardDaysChange
                 }
                 onOpenRecentReadings={(
                   selected
@@ -2384,6 +2543,63 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     textAlign: 'center',
     marginTop: 8,
+  },
+
+  pressureRangeControl: {
+    marginBottom: 16,
+  },
+
+  pressureRangeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+
+  pressureRangeLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#374151',
+  },
+
+  pressureRangeButtons: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+
+  pressureRangeButton: {
+    minWidth: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+  },
+
+  pressureRangeButtonActive: {
+    borderColor: '#2563eb',
+    backgroundColor: '#2563eb',
+  },
+
+  pressureRangeButtonPressed: {
+    opacity: 0.8,
+  },
+
+  pressureRangeButtonDisabled: {
+    opacity: 0.7,
+  },
+
+  pressureRangeButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#374151',
+  },
+
+  pressureRangeButtonTextActive: {
+    color: '#ffffff',
   },
 
   latestReadingCard: {
